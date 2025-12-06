@@ -56,7 +56,8 @@
 
 		viewportController.setCanvas(canvas);
 		ctx.resize();
-		viewportController.resize(canvas.width, canvas.height);
+		// Use CSS dimensions for viewport (not DPR-scaled buffer dimensions)
+		viewportController.resize(canvas.clientWidth, canvas.clientHeight);
 
 		inputHandler = new InputHandler(canvas);
 
@@ -68,7 +69,11 @@
 
 		const handleResize = () => {
 			if (ctx.resize()) {
-				viewportController.resize(canvas.width, canvas.height);
+				// Use CSS dimensions for viewport
+				viewportController.resize(
+					canvas.clientWidth,
+					canvas.clientHeight,
+				);
 			}
 		};
 		window.addEventListener("resize", handleResize);
