@@ -11,6 +11,10 @@ import { viewportController } from './ViewportController';
  * MOUSE:
  * - Scroll wheel = zoom
  * - Click + drag = pan
+ * 
+ * TOUCH (mobile):
+ * - Single finger drag = pan with inertia
+ * - Pinch = zoom with inertia
  */
 export class InputHandler {
     private canvas: HTMLCanvasElement;
@@ -19,13 +23,19 @@ export class InputHandler {
     private isDragging = false;
     private lastX = 0;
 
-    // Momentum scrolling
+    // Momentum scrolling (pan)
     private velocityX = 0;
     private lastMoveTime = 0;
     private momentumId = 0;
 
+    // Zoom momentum
+    private zoomVelocity = 0;
+    private zoomMomentumId = 0;
+    private lastZoomCenter = 0;
+
     // Pinch zoom (touch)
     private pinchDistance = 0;
+    private lastPinchTime = 0;
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -149,7 +159,7 @@ export class InputHandler {
     }
 
     /**
-     * MOMENTUM SCROLLING
+     * MOMENTUM SCROLLING (pan)
      */
     private startMomentum() {
         const friction = 0.95;
@@ -169,47 +179,114 @@ export class InputHandler {
     }
 
     /**
+     * ZOOM MOMENTUM
+     */
+    private startZoomMomentum() {
+        const friction = 0.92;
+
+        const tick = () => {
+            this.zoomVelocity *= friction;
+
+            if (Math.abs(this.zoomVelocity) < 0.001) {
+                return;
+            }
+
+            viewportController.zoomAt(this.lastZoomCenter, this.zoomVelocity);
+            this.zoomMomentumId = requestAnimationFrame(tick);
+        };
+
+        this.zoomMomentumId = requestAnimationFrame(tick);
+    }
+
+    /**
      * TOUCH START = Begin drag or pinch
      */
     private handleTouchStart(e: TouchEvent) {
         e.preventDefault();
 
+        // Cancel any ongoing momentum
+        cancelAnimationFrame(this.momentumId);
+        cancelAnimationFrame(this.zoomMomentumId);
+
         if (e.touches.length === 1) {
             this.isDragging = true;
             this.lastX = e.touches[0].clientX;
+            this.lastMoveTime = performance.now();
+            this.velocityX = 0;
         } else if (e.touches.length === 2) {
+            this.isDragging = false;
             this.pinchDistance = this.getTouchDistance(e.touches);
+            this.lastPinchTime = performance.now();
+            this.zoomVelocity = 0;
+
+            const rect = this.canvas.getBoundingClientRect();
+            this.lastZoomCenter = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
         }
     }
 
     /**
-     * TOUCH MOVE = Pan or pinch zoom
+     * TOUCH MOVE = Pan or pinch zoom with velocity tracking
      */
     private handleTouchMove(e: TouchEvent) {
         e.preventDefault();
 
         if (e.touches.length === 1 && this.isDragging) {
             const deltaX = e.touches[0].clientX - this.lastX;
+            const now = performance.now();
+            const deltaTime = now - this.lastMoveTime;
+
+            // Track velocity for inertia
+            if (deltaTime > 0) {
+                this.velocityX = (deltaX / deltaTime) * 16;
+            }
+
             viewportController.pan(deltaX);
             this.lastX = e.touches[0].clientX;
+            this.lastMoveTime = now;
         } else if (e.touches.length === 2) {
             const newDistance = this.getTouchDistance(e.touches);
             const scale = newDistance / this.pinchDistance;
+            const now = performance.now();
+            const deltaTime = now - this.lastPinchTime;
 
             const rect = this.canvas.getBoundingClientRect();
             const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+            this.lastZoomCenter = midX;
 
-            // Faster zoom for touch
-            viewportController.zoomAt(midX, Math.log(scale) * 5);
+            // 40% faster zoom: multiply by 1.4, then additional boost with * 7
+            const zoomAmount = Math.log(scale) * 7;
+
+            // Track zoom velocity for inertia
+            if (deltaTime > 0) {
+                this.zoomVelocity = zoomAmount * 0.5;
+            }
+
+            viewportController.zoomAt(midX, zoomAmount);
             this.pinchDistance = newDistance;
+            this.lastPinchTime = now;
         }
     }
 
     /**
-     * TOUCH END
+     * TOUCH END = Start inertia
      */
-    private handleTouchEnd() {
-        this.isDragging = false;
+    private handleTouchEnd(e: TouchEvent) {
+        if (e.touches.length === 0) {
+            // All fingers lifted
+            if (this.isDragging && Math.abs(this.velocityX) > 0.5) {
+                this.startMomentum();
+            }
+            if (Math.abs(this.zoomVelocity) > 0.01) {
+                this.startZoomMomentum();
+            }
+            this.isDragging = false;
+        } else if (e.touches.length === 1) {
+            // Transitioned from pinch to single finger
+            this.isDragging = true;
+            this.lastX = e.touches[0].clientX;
+            this.lastMoveTime = performance.now();
+            this.velocityX = 0;
+        }
     }
 
     /**
@@ -262,5 +339,6 @@ export class InputHandler {
         window.removeEventListener('mouseup', this.handleMouseUp.bind(this));
         window.removeEventListener('keydown', this.handleKeyDown.bind(this));
         cancelAnimationFrame(this.momentumId);
+        cancelAnimationFrame(this.zoomMomentumId);
     }
 }

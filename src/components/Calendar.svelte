@@ -950,6 +950,21 @@
 			<div>Zoom: {viewport.pixelsPerMs.toExponential(2)}</div>
 		</div>
 	{/if}
+
+	<!-- Keyboard shortcuts help -->
+	<div class="shortcuts-help">
+		<div class="shortcuts-title">Keyboard Shortcuts</div>
+		<div class="shortcut">
+			<span class="key">←</span><span class="key">→</span> Pan
+		</div>
+		<div class="shortcut">
+			<span class="key">+</span><span class="key">-</span> Zoom
+		</div>
+		<div class="shortcut"><span class="key">T</span> Today</div>
+		<div class="shortcut">
+			<span class="key">1</span>-<span class="key">4</span> Presets
+		</div>
+	</div>
 </div>
 
 <style>
@@ -1095,5 +1110,52 @@
 
 	.today-button:active {
 		background: #b71c1c;
+	}
+
+	/* Keyboard shortcuts help box */
+	.shortcuts-help {
+		position: absolute;
+		bottom: 16px;
+		right: 16px;
+		background: rgba(0, 0, 0, 0.75);
+		color: white;
+		padding: 12px 16px;
+		border-radius: 8px;
+		font-size: 12px;
+		pointer-events: none;
+		z-index: 15;
+	}
+
+	.shortcuts-title {
+		font-weight: 600;
+		margin-bottom: 8px;
+		font-size: 13px;
+		color: #ddd;
+	}
+
+	.shortcut {
+		margin: 4px 0;
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.key {
+		display: inline-block;
+		background: rgba(255, 255, 255, 0.15);
+		border: 1px solid rgba(255, 255, 255, 0.3);
+		border-radius: 4px;
+		padding: 2px 6px;
+		font-family: monospace;
+		font-size: 11px;
+		min-width: 18px;
+		text-align: center;
+	}
+
+	/* Hide shortcuts on mobile */
+	@media (max-width: 768px) {
+		.shortcuts-help {
+			display: none;
+		}
 	}
 </style>
