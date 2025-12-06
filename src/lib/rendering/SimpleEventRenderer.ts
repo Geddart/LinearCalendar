@@ -106,38 +106,45 @@ export class SimpleEventRenderer {
      * 
      * WIDTH: Exactly matches the event's time span in pixels
      * HEIGHT: Fixed at EVENT_HEIGHT when shown as bar, DOT_SIZE when zoomed out
+     * 
+     * DPI SCALING: All dimensions are scaled by devicePixelRatio for crisp rendering
+     * on Retina/high-DPI displays.
      */
     render(events: RenderableEvent[], viewport: ViewportState) {
         const gl = this.ctx.gl;
+        const dpr = this.ctx.getDevicePixelRatio();
 
         gl.useProgram(this.program);
         gl.bindVertexArray(this.vao);
 
-        gl.uniform2f(this.uniforms.viewportSize, viewport.width, viewport.height);
+        // Use actual canvas buffer dimensions (DPI-scaled)
+        const canvasWidth = this.ctx.canvas.width;
+        const canvasHeight = this.ctx.canvas.height;
+        gl.uniform2f(this.uniforms.viewportSize, canvasWidth, canvasHeight);
 
-        // Event rendering constants
-        const EVENT_HEIGHT = 24; // Fixed height for bar events
-        const DOT_SIZE = 6;      // Minimum size when very zoomed out
+        // Event rendering constants (scaled by DPR for crisp rendering)
+        const EVENT_HEIGHT = 24 * dpr; // Fixed height for bar events
+        const DOT_SIZE = 6 * dpr;      // Minimum size when very zoomed out
 
         for (const event of events) {
-            // === X POSITION (64-bit precision) ===
-            const startPx = (event.startTime - viewport.centerTime) * viewport.pixelsPerMs;
-            const endPx = (event.endTime - viewport.centerTime) * viewport.pixelsPerMs;
+            // === X POSITION (64-bit precision, scaled by DPR) ===
+            const startPx = (event.startTime - viewport.centerTime) * viewport.pixelsPerMs * dpr;
+            const endPx = (event.endTime - viewport.centerTime) * viewport.pixelsPerMs * dpr;
             const centerX = (startPx + endPx) / 2;
 
             // Width is EXACTLY the time span in pixels, with a minimum size
             const timeSpanWidth = endPx - startPx;
             const eventWidth = Math.max(timeSpanWidth, DOT_SIZE);
 
-            // === Y POSITION (stable, from 0-1 lane position) ===
-            const centerY = (event.y - 0.5) * viewport.height;
+            // === Y POSITION (stable, from 0-1 lane position, scaled by DPR) ===
+            const centerY = (event.y - 0.5) * canvasHeight;
 
             // === HEIGHT ===
             // Height morphs smoothly between DOT_SIZE and EVENT_HEIGHT
             // based on morphFactor, but stays at EVENT_HEIGHT once reached
             const height = DOT_SIZE + (EVENT_HEIGHT - DOT_SIZE) * viewport.morphFactor;
 
-            // Set uniforms (all in pixels, relative to screen center)
+            // Set uniforms (all in actual pixels, relative to screen center)
             gl.uniform2f(this.uniforms.pos, centerX, centerY);
             gl.uniform2f(this.uniforms.size, eventWidth, height);
             gl.uniform4f(this.uniforms.color, event.colorR, event.colorG, event.colorB, event.colorA);
@@ -148,3 +155,4 @@ export class SimpleEventRenderer {
         gl.bindVertexArray(null);
     }
 }
+

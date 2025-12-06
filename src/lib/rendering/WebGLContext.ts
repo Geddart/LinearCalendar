@@ -7,6 +7,7 @@
 export class WebGLContext {
     public gl: WebGL2RenderingContext;
     public canvas: HTMLCanvasElement;
+    private dpr: number = 1;
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -27,6 +28,9 @@ export class WebGLContext {
 
         // Initial setup
         this.setupGL();
+
+        // Initial resize to handle DPI correctly
+        this.resize();
     }
 
     private setupGL() {
@@ -95,24 +99,48 @@ export class WebGLContext {
     }
 
     /**
-     * RESIZE canvas to match display size.
+     * RESIZE canvas to match display size with devicePixelRatio support.
      *
-     * IMPORTANT: Call this on window resize.
+     * IMPORTANT: This handles Retina/high-DPI displays properly.
+     * The canvas internal resolution is scaled by devicePixelRatio
+     * while CSS keeps it at the display size.
+     * 
      * Returns true if size changed.
      */
     resize(): boolean {
         const canvas = this.canvas;
+
+        // Get the device pixel ratio (2 on Retina, 3 on some phones, etc.)
+        const dpr = window.devicePixelRatio || 1;
+        this.dpr = dpr;
+
+        // Get the CSS display size
         const displayWidth = canvas.clientWidth;
         const displayHeight = canvas.clientHeight;
 
-        if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
-            canvas.width = displayWidth;
-            canvas.height = displayHeight;
-            this.gl.viewport(0, 0, displayWidth, displayHeight);
+        // Calculate the actual pixel size needed
+        const pixelWidth = Math.round(displayWidth * dpr);
+        const pixelHeight = Math.round(displayHeight * dpr);
+
+        if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+            // Set the canvas buffer size to the actual pixel size
+            canvas.width = pixelWidth;
+            canvas.height = pixelHeight;
+
+            // Set the viewport to match
+            this.gl.viewport(0, 0, pixelWidth, pixelHeight);
+
             return true;
         }
 
         return false;
+    }
+
+    /**
+     * Get the current device pixel ratio
+     */
+    getDevicePixelRatio(): number {
+        return this.dpr;
     }
 
     /**
