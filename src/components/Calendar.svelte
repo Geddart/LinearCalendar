@@ -374,7 +374,7 @@
 							break;
 						case "hour":
 							// Hour labels only
-							label = currentDate.getHours().toString();
+							label = `${currentDate.getHours()}h`;
 							break;
 					}
 
@@ -718,7 +718,7 @@
 								subLabel = `${currentDate.getDate()} ${dayWeekday}`;
 								break;
 							case "hour":
-								subLabel = currentDate.getHours().toString();
+								subLabel = `${currentDate.getHours()}h`;
 								break;
 						}
 
