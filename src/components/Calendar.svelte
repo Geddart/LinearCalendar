@@ -181,7 +181,7 @@
 		fpsUpdateInterval += now - lastFrameTime;
 		lastFrameTime = now;
 
-		// Update FPS every 500ms for stability
+		// Update debug stats every 500ms (expensive operations)
 		if (fpsUpdateInterval >= 500) {
 			debugStats.fps = Math.round(
 				(frameCount / fpsUpdateInterval) * 1000,
@@ -194,6 +194,24 @@
 				const mem = (performance as any).memory;
 				debugStats.memoryUsage = `${Math.round(mem.usedJSHeapSize / 1024 / 1024)}MB`;
 			}
+
+			// Format center time (expensive toLocaleString - only update every 500ms)
+			const centerDate = new Date(viewport.centerTime);
+			debugStats.centerTime = centerDate
+				.toLocaleString("en-CA", {
+					year: "numeric",
+					month: "2-digit",
+					day: "2-digit",
+					hour: "2-digit",
+					minute: "2-digit",
+					second: "2-digit",
+					hour12: false,
+				})
+				.replace(",", "");
+
+			// Format visible time range (only update every 500ms)
+			const visibleMs = viewport.width / viewport.pixelsPerMs;
+			debugStats.visibleRange = formatDuration(visibleMs);
 		}
 
 		ctx.clear(0.98, 0.98, 0.99);
@@ -203,28 +221,10 @@
 		const visibleEvents = getVisibleEvents();
 		renderer.render(visibleEvents, viewport);
 
-		// Update debug stats
+		// Update lightweight debug stats (these are cheap, can run every frame)
 		debugStats.objectsDrawn = visibleEvents.length;
 		debugStats.gridLinesCount = gridLines.length;
 		debugStats.drawCalls = visibleEvents.length + 1; // +1 for clear
-
-		// Format center time (in local timezone to match grid lines)
-		const centerDate = new Date(viewport.centerTime);
-		debugStats.centerTime = centerDate
-			.toLocaleString("en-CA", {
-				year: "numeric",
-				month: "2-digit",
-				day: "2-digit",
-				hour: "2-digit",
-				minute: "2-digit",
-				second: "2-digit",
-				hour12: false,
-			})
-			.replace(",", "");
-
-		// Format visible time range
-		const visibleMs = viewport.width / viewport.pixelsPerMs;
-		debugStats.visibleRange = formatDuration(visibleMs);
 	}
 
 	/**
