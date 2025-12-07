@@ -193,6 +193,11 @@
 	function render() {
 		if (!ctx || !viewport) return;
 
+		// Check for canvas size changes every frame (iOS Safari changes during zoom)
+		if (ctx.resize()) {
+			viewportController.resize(canvas.clientWidth, canvas.clientHeight);
+		}
+
 		// Track FPS
 		const now = performance.now();
 		frameCount++;
