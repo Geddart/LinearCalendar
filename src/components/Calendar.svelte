@@ -439,54 +439,255 @@
 			);
 		}
 
-		// DECADE LABELS
-		if (spacings.decade > minSpacing.decade * 0.4) {
-			const opacity = calculateOpacity(
-				spacings.decade,
-				minSpacing.decade,
+		// DECADE LABELS - Progressive disclosure based on spacing
+		// Century marks first (1900, 2000), then 50-year marks, then all decades
+		// PERFORMANCE: Skip if spacing too small
+		if (spacings.decade >= 10) {
+			// Minimum spacing for any decade to appear
+			const decadeSpacing = spacings.decade;
+			const startDate = new Date(startTime);
+			let currentDate = new Date(
+				Math.floor(startDate.getFullYear() / 10) * 10,
+				0,
+				1,
 			);
-			addUnitLines(
-				"decade",
-				opacity,
-				(d) => d.getFullYear().toString(),
-				(d) => (d.getFullYear() % 100 === 0 ? 1.0 : 0.7),
-				(d) => new Date(Math.floor(d.getFullYear() / 10) * 10, 0, 1),
-				(d) => d.setFullYear(d.getFullYear() + 10),
-			);
+
+			while (currentDate.getTime() < endTime) {
+				const year = currentDate.getFullYear();
+
+				// Progressive disclosure:
+				// - Century marks (1900, 2000) appear at 15px
+				// - 50-year marks (1950, 2050) appear at 35px
+				// - All other decades appear at 60px
+				let requiredSpacing: number;
+				let importance: number;
+
+				if (year % 100 === 0) {
+					requiredSpacing = 15;
+					importance = 1.0;
+				} else if (year % 50 === 0) {
+					requiredSpacing = 35;
+					importance = 0.7;
+				} else {
+					requiredSpacing = 60;
+					importance = 0.4;
+				}
+
+				const fadeStart = requiredSpacing * 0.5;
+				const fadeEnd = requiredSpacing;
+				let decadeOpacity = 0;
+				if (decadeSpacing >= fadeEnd) {
+					decadeOpacity = 1;
+				} else if (decadeSpacing > fadeStart) {
+					decadeOpacity =
+						(decadeSpacing - fadeStart) / (fadeEnd - fadeStart);
+				}
+
+				if (decadeOpacity > 0.01) {
+					const currentTime = currentDate.getTime();
+					const screenX =
+						halfWidth + (currentTime - centerTime) * pixelsPerMs;
+
+					if (
+						screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
+						screenX < width
+					) {
+						const MIN_LABEL_DISTANCE = 15;
+						const tooClose = newGridLines.some(
+							(line) =>
+								Math.abs(line.x - screenX) < MIN_LABEL_DISTANCE,
+						);
+
+						if (!tooClose) {
+							const finalOpacity =
+								decadeOpacity * (0.5 + importance * 0.5);
+
+							newGridLines.push({
+								key: `decade-${currentTime}`,
+								x: screenX,
+								label: year.toString(),
+								isMajor: year % 100 === 0,
+								opacity: finalOpacity,
+								lineHeight: 1,
+								isSubUnit: false,
+								fontWeight: Math.round(400 + importance * 200),
+								fontSize: Math.round(10 + importance * 3),
+								labelOpacity: finalOpacity,
+							});
+						}
+					}
+				}
+
+				currentDate.setFullYear(currentDate.getFullYear() + 10);
+			}
 		}
 
-		// YEAR LABELS
-		if (spacings.year > minSpacing.year * 0.4) {
-			const opacity = calculateOpacity(spacings.year, minSpacing.year);
-			addUnitLines(
-				"year",
-				opacity,
-				(d) => d.getFullYear().toString(),
-				(d) =>
-					d.getFullYear() % 10 === 0
-						? 1.0
-						: d.getFullYear() % 5 === 0
-							? 0.8
-							: 0.5,
-				(d) => new Date(d.getFullYear(), 0, 1),
-				(d) => d.setFullYear(d.getFullYear() + 1),
-			);
+		// YEAR LABELS - Progressive disclosure based on spacing
+		// Decade years (2020, 2030) first, then ending in 5 (2025), then all
+		// PERFORMANCE: Skip if spacing too small
+		if (spacings.year >= 10) {
+			// Minimum spacing for any year to appear
+			const yearSpacing = spacings.year;
+			const startDate = new Date(startTime);
+			let currentDate = new Date(startDate.getFullYear(), 0, 1);
+
+			while (currentDate.getTime() < endTime) {
+				const year = currentDate.getFullYear();
+
+				// Progressive disclosure:
+				// - Decade years (2020) appear at 15px
+				// - Years ending in 5 (2025) appear at 25px
+				// - All other years appear at 40px
+				let requiredSpacing: number;
+				let importance: number;
+
+				if (year % 10 === 0) {
+					requiredSpacing = 15;
+					importance = 1.0;
+				} else if (year % 5 === 0) {
+					requiredSpacing = 25;
+					importance = 0.7;
+				} else {
+					requiredSpacing = 40;
+					importance = 0.4;
+				}
+
+				const fadeStart = requiredSpacing * 0.5;
+				const fadeEnd = requiredSpacing;
+				let yearOpacity = 0;
+				if (yearSpacing >= fadeEnd) {
+					yearOpacity = 1;
+				} else if (yearSpacing > fadeStart) {
+					yearOpacity =
+						(yearSpacing - fadeStart) / (fadeEnd - fadeStart);
+				}
+
+				if (yearOpacity > 0.01) {
+					const currentTime = currentDate.getTime();
+					const screenX =
+						halfWidth + (currentTime - centerTime) * pixelsPerMs;
+
+					if (
+						screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
+						screenX < width
+					) {
+						const MIN_LABEL_DISTANCE = 15;
+						const tooClose = newGridLines.some(
+							(line) =>
+								Math.abs(line.x - screenX) < MIN_LABEL_DISTANCE,
+						);
+
+						if (!tooClose) {
+							const finalOpacity =
+								yearOpacity * (0.5 + importance * 0.5);
+
+							newGridLines.push({
+								key: `year-${currentTime}`,
+								x: screenX,
+								label: year.toString(),
+								isMajor: true,
+								opacity: finalOpacity,
+								lineHeight: 1,
+								isSubUnit: false,
+								fontWeight: Math.round(400 + importance * 200),
+								fontSize: Math.round(10 + importance * 3),
+								labelOpacity: finalOpacity,
+							});
+						}
+					}
+				}
+
+				currentDate.setFullYear(currentDate.getFullYear() + 1);
+			}
 		}
 
-		// MONTH LABELS
-		if (spacings.month > minSpacing.month * 0.4) {
-			const opacity = calculateOpacity(spacings.month, minSpacing.month);
-			addUnitLines(
-				"month",
-				opacity,
-				(d) =>
-					d.getMonth() === 0
-						? d.getFullYear().toString()
-						: d.toLocaleString("en-US", { month: "short" }),
-				(d) => (d.getMonth() === 0 ? 1.0 : 0.6),
-				(d) => new Date(d.getFullYear(), d.getMonth(), 1),
-				(d) => d.setMonth(d.getMonth() + 1),
+		// MONTH LABELS - Progressive disclosure based on spacing
+		// January first, then quarterly months, then all
+		// PERFORMANCE: Skip if spacing too small
+		if (spacings.month >= 8) {
+			// Minimum spacing for any month to appear
+			const monthSpacing = spacings.month;
+			const startDate = new Date(startTime);
+			let currentDate = new Date(
+				startDate.getFullYear(),
+				startDate.getMonth(),
+				1,
 			);
+
+			while (currentDate.getTime() < endTime) {
+				const month = currentDate.getMonth();
+
+				// Progressive disclosure:
+				// - January (0) appears at 10px
+				// - Quarterly months (Apr=3, Jul=6, Oct=9) appear at 20px
+				// - All other months appear at 35px
+				let requiredSpacing: number;
+				let importance: number;
+
+				if (month === 0) {
+					requiredSpacing = 10;
+					importance = 1.0;
+				} else if (month % 3 === 0) {
+					requiredSpacing = 20;
+					importance = 0.7;
+				} else {
+					requiredSpacing = 35;
+					importance = 0.4;
+				}
+
+				const fadeStart = requiredSpacing * 0.5;
+				const fadeEnd = requiredSpacing;
+				let monthOpacity = 0;
+				if (monthSpacing >= fadeEnd) {
+					monthOpacity = 1;
+				} else if (monthSpacing > fadeStart) {
+					monthOpacity =
+						(monthSpacing - fadeStart) / (fadeEnd - fadeStart);
+				}
+
+				if (monthOpacity > 0.01) {
+					const currentTime = currentDate.getTime();
+					const screenX =
+						halfWidth + (currentTime - centerTime) * pixelsPerMs;
+
+					if (
+						screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
+						screenX < width
+					) {
+						const MIN_LABEL_DISTANCE = 15;
+						const tooClose = newGridLines.some(
+							(line) =>
+								Math.abs(line.x - screenX) < MIN_LABEL_DISTANCE,
+						);
+
+						if (!tooClose) {
+							const finalOpacity =
+								monthOpacity * (0.5 + importance * 0.5);
+							const label =
+								month === 0
+									? currentDate.getFullYear().toString()
+									: currentDate.toLocaleString("en-US", {
+											month: "short",
+										});
+
+							newGridLines.push({
+								key: `month-${currentTime}`,
+								x: screenX,
+								label: label,
+								isMajor: month === 0,
+								opacity: finalOpacity,
+								lineHeight: 1,
+								isSubUnit: false,
+								fontWeight: Math.round(400 + importance * 200),
+								fontSize: Math.round(10 + importance * 2),
+								labelOpacity: finalOpacity,
+							});
+						}
+					}
+				}
+
+				currentDate.setMonth(currentDate.getMonth() + 1);
+			}
 		}
 
 		// WEEK LABELS
