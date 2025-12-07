@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from "svelte";
 	import { WebGLContext } from "$lib/rendering/WebGLContext";
-	import { SimpleEventRenderer } from "$lib/rendering/SimpleEventRenderer";
+	import { InstancedEventRenderer } from "$lib/rendering/InstancedEventRenderer";
 	import { viewportController } from "$lib/viewport/ViewportController";
 	import { InputHandler } from "$lib/viewport/InputHandler";
 	import {
@@ -17,7 +17,7 @@
 
 	let canvas: HTMLCanvasElement;
 	let ctx: WebGLContext;
-	let renderer: SimpleEventRenderer;
+	let renderer: InstancedEventRenderer;
 	let inputHandler: InputHandler;
 	let frameId: number;
 
@@ -88,7 +88,7 @@
 		});
 
 		ctx = new WebGLContext(canvas);
-		renderer = new SimpleEventRenderer(ctx);
+		renderer = new InstancedEventRenderer(ctx);
 
 		viewportController.setCanvas(canvas);
 		ctx.resize();
@@ -454,111 +454,168 @@
 					halfWidth + (currentTime - centerTime) * pixelsPerMs;
 
 				if (screenX > CONTEXT_COL_WIDTH && screenX < width) {
-					let label = "";
-					let isMajor = false;
+					// Calculate proximity to existing major lines for smooth fading
+					// Instead of hard skipping, we fade out minor lines as they approach major ones
+					const FADE_START_DIST = 100; // Start fading out at 100px
+					const FADE_END_DIST = 35; // Fully invisible at 35px
 
-					// Generate labels for current LOD level only (NO month/year labels here)
-					switch (currentLOD.unit) {
-						case "millennium":
-						case "century":
-						case "decade":
-						case "year":
-							label = currentDate.getFullYear().toString();
-							isMajor = true;
-							break;
-						case "month":
-							// Month labels only, year boundaries handled separately
-							label = currentDate.toLocaleString("en-US", {
-								month: "short",
-							});
-							isMajor = currentDate.getMonth() === 0; // January
-							break;
-						case "week":
-							// Week labels only (W1, W2...), month boundaries handled separately
-							label = `W${Math.ceil(currentDate.getDate() / 7)}`;
-							break;
-						case "day":
-							// Day with weekday: "9 Mon"
-							const weekdayShort = currentDate.toLocaleString(
-								"en-US",
-								{ weekday: "short" },
+					// Capture existing major lines to check against (don't check against peers)
+					const existingLines = [...newGridLines];
+
+					let collisionOpacity = 1.0;
+
+					for (const line of existingLines) {
+						const dist = Math.abs(line.x - screenX);
+						if (dist < FADE_START_DIST) {
+							// Calculate fade factor: 0 at 15px, 1 at 70px
+							const fade = Math.max(
+								0,
+								Math.min(
+									1,
+									(dist - FADE_END_DIST) /
+										(FADE_START_DIST - FADE_END_DIST),
+								),
 							);
-							label = `${currentDate.getDate()} ${weekdayShort}`;
-							break;
-						case "hour":
-							// Hour labels only
-							label = `${currentDate.getHours()}h`;
-							break;
+							collisionOpacity = Math.min(collisionOpacity, fade);
+						}
 					}
 
-					// Calculate continuous importance (0-1) based on hierarchical position
-					// Higher importance = decade boundaries, month starts, etc.
-					let importance = 0.5; // Base importance
-					const year = currentDate.getFullYear();
-					const month = currentDate.getMonth();
-					const day = currentDate.getDate();
-					const hour = currentDate.getHours();
+					// Only render if visible enough
+					if (collisionOpacity > 0.05) {
+						let label = "";
+						let isMajor = false;
 
-					switch (currentLOD.unit) {
-						case "millennium":
-							importance = 1.0; // All millenniums are important
-							break;
-						case "century":
-							importance = year % 1000 === 0 ? 1.0 : 0.7; // Millennium starts are more important
-							break;
-						case "decade":
-							importance =
-								year % 100 === 0
-									? 1.0
-									: year % 50 === 0
-										? 0.85
-										: 0.7;
-							break;
-						case "year":
-							// Decade starts are more important than regular years
-							importance =
-								year % 10 === 0
-									? 0.9
-									: year % 5 === 0
-										? 0.7
-										: 0.5;
-							break;
-						case "month":
-							importance = month === 0 ? 0.9 : 0.6; // January is more important
-							break;
-						case "week":
-							importance = 0.5;
-							break;
-						case "day":
-							importance = day === 1 ? 0.8 : 0.5; // Month start is more important
-							break;
-						case "hour":
-							importance =
-								hour === 0 ? 0.8 : hour % 6 === 0 ? 0.6 : 0.4;
-							break;
+						// Generate labels for current LOD level only (NO month/year labels here)
+						switch (currentLOD.unit) {
+							case "millennium":
+							case "century":
+							case "decade":
+							case "year":
+								label = currentDate.getFullYear().toString();
+								isMajor = true;
+								break;
+							case "month":
+								// Month labels only, year boundaries handled separately
+								label = currentDate.toLocaleString("en-US", {
+									month: "short",
+								});
+								isMajor = currentDate.getMonth() === 0; // January
+								break;
+							case "week":
+								// Week labels only (W1, W2...), month boundaries handled separately
+								// Use ISO week number relative to year
+								label = `W${getISOWeekNumber(currentDate)}`;
+								break;
+							case "day":
+								// Day with weekday: "9 Mon"
+								const weekdayShort = currentDate.toLocaleString(
+									"en-US",
+									{ weekday: "short" },
+								);
+								label = `${currentDate.getDate()} ${weekdayShort}`;
+								break;
+							case "hour":
+								// 12-hour format with AM/PM
+								label = currentDate
+									.toLocaleString("en-US", {
+										hour: "numeric",
+										hour12: true,
+									})
+									.replace(" ", ""); // Remove space between time and period
+								break;
+						}
+
+						// Calculate continuous importance (0-1) based on hierarchical position
+						// Higher importance = decade boundaries, month starts, etc.
+						let importance = 0.5; // Base importance
+						const year = currentDate.getFullYear();
+						const month = currentDate.getMonth();
+						const day = currentDate.getDate();
+						const hour = currentDate.getHours();
+
+						switch (currentLOD.unit) {
+							case "millennium":
+								importance = 1.0; // All millenniums are important
+								break;
+							case "century":
+								importance = year % 1000 === 0 ? 1.0 : 0.7; // Millennium starts are more important
+								break;
+							case "decade":
+								importance =
+									year % 100 === 0
+										? 1.0
+										: year % 50 === 0
+											? 0.85
+											: 0.7;
+								break;
+							case "year":
+								// Decade starts are more important than regular years
+								importance =
+									year % 10 === 0
+										? 0.9
+										: year % 5 === 0
+											? 0.7
+											: 0.5;
+								break;
+							case "month":
+								importance = month === 0 ? 0.9 : 0.6; // January is more important
+								break;
+							case "week":
+								importance = 0.5;
+								break;
+							case "day":
+								importance = day === 1 ? 0.8 : 0.5; // Month start is more important
+								break;
+							case "hour":
+								importance =
+									hour === 0
+										? 0.8
+										: hour % 6 === 0
+											? 0.6
+											: 0.4;
+								break;
+						}
+
+						// Snap font weight to avoid layout thrashing/flickering
+						// 400 (Regular) or 600 (SemiBold) based on importance
+						const finalWeight = importance > 0.6 ? 600 : 400;
+
+						// Font size: 11px to 13px based on importance
+						const fontSize = 11 + importance * 2;
+
+						// Calculate opacity - for hours, use spacing-based progressive opacity
+						let lineOpacity = 1;
+						if (currentLOD.unit === "hour") {
+							const pixelSpacingPerHour = HOUR_MS * pixelsPerMs;
+							const HOUR_LABEL_MIN_SPACING = 45;
+							const HOUR_LABEL_FULL_SPACING = 70;
+							// Fade in from MIN to FULL spacing
+							lineOpacity = Math.min(
+								1,
+								Math.max(
+									0,
+									(pixelSpacingPerHour -
+										HOUR_LABEL_MIN_SPACING) /
+										(HOUR_LABEL_FULL_SPACING -
+											HOUR_LABEL_MIN_SPACING),
+								),
+							);
+						}
+
+						// Apply proximity fade (minor lines fading near major ones)
+						lineOpacity *= collisionOpacity;
+
+						newGridLines.push({
+							x: screenX,
+							label,
+							isMajor: importance > 0.7, // Keep for color styling
+							opacity: lineOpacity,
+							lineHeight: 1,
+							isSubUnit: false,
+							fontWeight: finalWeight,
+							fontSize: Math.round(fontSize),
+						});
 					}
-
-					// Smooth weight: 400 (light) to 650 (semibold) based on importance
-					// Also factor in transitionProgress for smooth LOD transitions
-					const baseWeight = 400 + importance * 200;
-					const progressBoost = transitionProgress * 50; // Slight boost as we zoom in
-					const finalWeight = Math.round(
-						Math.min(650, baseWeight + progressBoost),
-					);
-
-					// Font size: 11px to 13px based on importance
-					const fontSize = 11 + importance * 2;
-
-					newGridLines.push({
-						x: screenX,
-						label,
-						isMajor: importance > 0.7, // Keep for color styling
-						opacity: 1,
-						lineHeight: 1,
-						isSubUnit: false,
-						fontWeight: finalWeight,
-						fontSize: Math.round(fontSize),
-					});
 				}
 
 				// Increment using calendar for proper alignment
@@ -614,44 +671,66 @@
 						(monthDate.getTime() - centerTime) * pixelsPerMs;
 
 					if (screenX > CONTEXT_COL_WIDTH && screenX < width) {
-						// Check if there's already a line very close (to prevent duplicates)
-						const hasDuplicate = newGridLines.some(
-							(l) => Math.abs(l.x - screenX) < 3,
-						);
+						// Calculate proximity-based opacity - smooth fade near other labels
+						const FADE_START = 100; // px - start fading at this distance
+						const FADE_END = 35; // px - fully hidden at this distance
 
-						if (!hasDuplicate) {
-							newGridLines.push({
-								x: screenX,
-								label:
-									monthDate.getMonth() === 0
-										? monthDate.getFullYear().toString()
-										: monthDate.toLocaleString("en-US", {
-												month: "short",
-											}),
-								isMajor: true,
-								opacity: 1,
-								lineHeight: 1,
-								isSubUnit: false,
-								fontWeight: 600,
-								fontSize: 13,
-							});
-						} else {
-							// Update existing line to be major with month label
-							const existing = newGridLines.find(
+						// Capture existing lines (just months so far, self-check ok or irrelevant)
+						const existingLines = [...newGridLines];
+
+						let proximityOpacity = 1.0;
+						for (const line of existingLines) {
+							const dist = Math.abs(line.x - screenX);
+							if (dist < FADE_START && dist > 0) {
+								// Smooth fade: full opacity at FADE_START, zero at FADE_END
+								const fadeRatio = Math.max(
+									0,
+									(dist - FADE_END) / (FADE_START - FADE_END),
+								);
+								proximityOpacity = Math.min(
+									proximityOpacity,
+									fadeRatio,
+								);
+							}
+						}
+
+						const monthLabel =
+							monthDate.getMonth() === 0
+								? monthDate.getFullYear().toString()
+								: monthDate.toLocaleString("en-US", {
+										month: "short",
+									});
+
+						if (proximityOpacity > 0.05) {
+							// Check for very close existing line (same position) - update instead of duplicate
+							const samePosition = newGridLines.find(
 								(l) => Math.abs(l.x - screenX) < 3,
 							);
-							if (existing) {
-								existing.label =
-									monthDate.getMonth() === 0
-										? monthDate.getFullYear().toString()
-										: monthDate.toLocaleString("en-US", {
-												month: "short",
-											});
-								existing.isMajor = true;
+
+							if (samePosition) {
+								// Update existing line with month label (month takes priority)
+								samePosition.label = monthLabel;
+								samePosition.isMajor = true;
+								samePosition.fontWeight = 600;
+								samePosition.fontSize = 13;
+								samePosition.opacity = 1; // Month labels at full opacity
+							} else {
+								// Add new month boundary with proximity-based opacity
+								newGridLines.push({
+									x: screenX,
+									label: monthLabel,
+									isMajor: true,
+									opacity: proximityOpacity,
+									lineHeight: 1,
+									isSubUnit: false,
+									fontWeight: 600, // Fixed weight to prevent flickering
+									fontSize: Math.round(
+										11 + proximityOpacity * 2,
+									),
+								});
 							}
 						}
 					}
-
 					monthDate.setMonth(monthDate.getMonth() + 1);
 				}
 			}
@@ -699,34 +778,58 @@
 						});
 						const dayLabel = `${dayDate.getDate()} ${weekdayShort}`;
 
-						// Check if there's already a line very close (to prevent duplicates)
-						const hasDuplicate = newGridLines.some(
-							(l) => Math.abs(l.x - screenX) < 3,
-						);
+						// Calculate proximity-based opacity - smooth fade near other labels
+						const FADE_START = 100; // px - start fading at this distance
+						const FADE_END = 35; // px - fully hidden at this distance
 
-						if (!hasDuplicate) {
-							newGridLines.push({
-								x: screenX,
-								label: dayLabel,
-								isMajor: true,
-								opacity: 1,
-								lineHeight: 1,
-								isSubUnit: false,
-								fontWeight: 600,
-								fontSize: 13,
-							});
-						} else {
-							// Update existing line
-							const existing = newGridLines.find(
+						// Capture existing lines (just months so far, self-check ok or irrelevant)
+						const existingLines = [...newGridLines];
+
+						let proximityOpacity = 1.0;
+						for (const line of existingLines) {
+							const dist = Math.abs(line.x - screenX);
+							if (dist < FADE_START && dist > 0) {
+								const fadeRatio = Math.max(
+									0,
+									(dist - FADE_END) / (FADE_START - FADE_END),
+								);
+								proximityOpacity = Math.min(
+									proximityOpacity,
+									fadeRatio,
+								);
+							}
+						}
+
+						if (proximityOpacity > 0.05) {
+							// Check for very close existing line (same position) - update instead of duplicate
+							const samePosition = newGridLines.find(
 								(l) => Math.abs(l.x - screenX) < 3,
 							);
-							if (existing) {
-								existing.label = dayLabel;
-								existing.isMajor = true;
+
+							if (samePosition) {
+								// Update existing line with day label
+								samePosition.label = dayLabel;
+								samePosition.isMajor = true;
+								samePosition.fontWeight = 600;
+								samePosition.fontSize = 13;
+								samePosition.opacity = 1;
+							} else {
+								// Add new day boundary with proximity-based opacity
+								newGridLines.push({
+									x: screenX,
+									label: dayLabel,
+									isMajor: true,
+									opacity: proximityOpacity,
+									lineHeight: 1,
+									isSubUnit: false,
+									fontWeight: 600, // Fixed weight
+									fontSize: Math.round(
+										11 + proximityOpacity * 2,
+									),
+								});
 							}
 						}
 					}
-
 					dayDate.setDate(dayDate.getDate() + 1);
 				}
 			}
@@ -850,16 +953,36 @@
 
 					// Calculate opacity reduction based on proximity to existing lines
 					// Lines fade out smoothly as they get closer to other lines
-					const fadeDistance = 40; // Distance at which fade starts
+					const fadeDistance = 100; // Increased to 100px
+					const fadeEnd = 35; // Fully hidden at 35px
+
+					// Capture existing lines (Parents/LOD lines) to check against
+					// Do NOT check against peers (current sub-units)
+					// This requires us to know which lines are peers.
+					// Since we push to newGridLines, we should filter or use a snapshot.
+					// Snapshotting 'newGridLines' inside the loop is wrong (it grows).
+					// Snapshot must be taken OUTSIDE the loop.
+					// 'addSubUnitLines' iterates 'currentDate'.
+					// We need to snapshot ONCE at start of function?
+					// But addSubUnitLines is the function.
+					// Yes, snapshot at start of function (lines 837ish) is best.
+					// But here we are inside the loop.
+					// We can filter newGridLines: !line.isSubUnit
+
 					let proximityFactor = 1.0;
 					for (const line of newGridLines) {
+						if (line.isSubUnit) continue; // Don't fade against peers
 						const dist = Math.abs(line.x - screenX);
 						if (dist < fadeDistance) {
-							// Smooth fade: full opacity at fadeDistance, zero at 0
-							proximityFactor = Math.min(
-								proximityFactor,
-								dist / fadeDistance,
+							// Smooth fade: full opacity at fadeDistance, zero at fadeEnd
+							const fade = Math.max(
+								0,
+								Math.min(
+									1,
+									(dist - fadeEnd) / (fadeDistance - fadeEnd),
+								),
 							);
+							proximityFactor = Math.min(proximityFactor, fade);
 						}
 					}
 
@@ -867,6 +990,7 @@
 
 					// Only add if opacity is visible and not a parent boundary
 					if (!isParentBoundary && finalOpacity > 0.05) {
+						// Generate label for sub-unit (will fade in as it approaches becoming the main unit)
 						// Generate label for sub-unit (will fade in as it approaches becoming the main unit)
 						let subLabel = "";
 						switch (currentLOD.subUnit) {
@@ -885,7 +1009,8 @@
 								});
 								break;
 							case "week":
-								subLabel = `W${Math.ceil(currentDate.getDate() / 7)}`;
+								// Use ISO week number for consistency
+								subLabel = `W${getISOWeekNumber(currentDate)}`;
 								break;
 							case "day":
 								const dayWeekday = currentDate.toLocaleString(
@@ -906,7 +1031,7 @@
 							opacity: finalOpacity,
 							lineHeight: 1,
 							isSubUnit: true,
-							fontWeight: 400 + Math.round(finalOpacity * 150),
+							fontWeight: 400, // Fixed weight
 							fontSize: 11,
 						});
 					}
@@ -997,14 +1122,30 @@
 
 						if (screenX > CONTEXT_COL_WIDTH && screenX < width) {
 							// Calculate proximity-based fade
-							const fadeDistance = 40;
+							const fadeDistance = 100;
+							const fadeEnd = 35;
 							let proximityFactor = 1.0;
+
 							for (const line of newGridLines) {
+								if (
+									line.isSubUnit &&
+									line.label.startsWith(":")
+								)
+									continue; // Don't fade against minute peers
 								const dist = Math.abs(line.x - screenX);
 								if (dist < fadeDistance) {
+									// Smooth fade: full opacity at fadeDistance, zero at fadeEnd
+									const fade = Math.max(
+										0,
+										Math.min(
+											1,
+											(dist - fadeEnd) /
+												(fadeDistance - fadeEnd),
+										),
+									);
 									proximityFactor = Math.min(
 										proximityFactor,
-										dist / fadeDistance,
+										fade,
 									);
 								}
 							}
@@ -1032,8 +1173,21 @@
 			}
 		}
 
-		addLODLines();
+		// Helper to calculate ISO 8601 week number
+		function getISOWeekNumber(date: Date) {
+			const d = new Date(
+				Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()),
+			);
+			const dayNum = d.getUTCDay() || 7;
+			d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+			const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+			return Math.ceil(
+				((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7,
+			);
+		}
+
 		addMajorBoundaries();
+		addLODLines();
 		addSubUnitLines();
 
 		gridLines = newGridLines;
@@ -1091,7 +1245,7 @@
 				class="grid-line"
 				class:major={line.isMajor}
 				class:sub-unit={line.isSubUnit}
-				style="left: {line.x - CONTEXT_COL_WIDTH}px; 
+				style="left: {Math.round(line.x - CONTEXT_COL_WIDTH)}px; 
 					   opacity: {line.opacity}; 
 					   height: {line.lineHeight * 100}%;
 					   top: 0;"
