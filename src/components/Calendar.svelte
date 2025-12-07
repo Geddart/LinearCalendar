@@ -27,6 +27,40 @@
 	let viewport: ViewportState | null = null;
 	let unsubscribe: (() => void) | null = null;
 
+	// Debug stats for nerds
+	let debugStats = {
+		fps: 0,
+		objectsDrawn: 0,
+		gridLinesCount: 0,
+		drawCalls: 0,
+		centerTime: "",
+		visibleRange: "",
+		memoryUsage: "",
+	};
+	let lastFrameTime = performance.now();
+	let frameCount = 0;
+	let fpsUpdateInterval = 0;
+
+	// Toast notification for view changes
+	let toastMessage = "";
+	let toastVisible = false;
+	let toastKey = 0; // Unique key to force re-render on rapid presses
+	let toastTimeout: ReturnType<typeof setTimeout>;
+
+	// Mobile detection
+	let isMobile = false;
+
+	function showToast(message: string) {
+		// Increment key to force Svelte to re-create the element (restarts animation)
+		toastKey++;
+		toastMessage = message;
+		toastVisible = true;
+		clearTimeout(toastTimeout);
+		toastTimeout = setTimeout(() => {
+			toastVisible = false;
+		}, 1500);
+	}
+
 	// Time grid state - extended for smooth LOD transitions
 	let gridLines: {
 		x: number;
@@ -60,6 +94,17 @@
 		viewportController.resize(canvas.clientWidth, canvas.clientHeight);
 
 		inputHandler = new InputHandler(canvas);
+
+		// Wire up view change callback for toast notifications
+		inputHandler.onViewChange = (viewName: string) => {
+			showToast(viewName);
+		};
+
+		// Detect mobile
+		isMobile =
+			/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+				navigator.userAgent,
+			) || window.matchMedia("(max-width: 768px)").matches;
 
 		// Generate events
 		events = [...generateLifeEvents(), ...generateMockEvents(100)];
@@ -130,12 +175,73 @@
 	function render() {
 		if (!ctx || !viewport) return;
 
+		// Track FPS
+		const now = performance.now();
+		frameCount++;
+		fpsUpdateInterval += now - lastFrameTime;
+		lastFrameTime = now;
+
+		// Update FPS every 500ms for stability
+		if (fpsUpdateInterval >= 500) {
+			debugStats.fps = Math.round(
+				(frameCount / fpsUpdateInterval) * 1000,
+			);
+			frameCount = 0;
+			fpsUpdateInterval = 0;
+
+			// Update memory usage (if available)
+			if ((performance as any).memory) {
+				const mem = (performance as any).memory;
+				debugStats.memoryUsage = `${Math.round(mem.usedJSHeapSize / 1024 / 1024)}MB`;
+			}
+		}
+
 		ctx.clear(0.98, 0.98, 0.99);
 
 		updateTimeGrid();
 
 		const visibleEvents = getVisibleEvents();
 		renderer.render(visibleEvents, viewport);
+
+		// Update debug stats
+		debugStats.objectsDrawn = visibleEvents.length;
+		debugStats.gridLinesCount = gridLines.length;
+		debugStats.drawCalls = visibleEvents.length + 1; // +1 for clear
+
+		// Format center time (in local timezone to match grid lines)
+		const centerDate = new Date(viewport.centerTime);
+		debugStats.centerTime = centerDate
+			.toLocaleString("en-CA", {
+				year: "numeric",
+				month: "2-digit",
+				day: "2-digit",
+				hour: "2-digit",
+				minute: "2-digit",
+				second: "2-digit",
+				hour12: false,
+			})
+			.replace(",", "");
+
+		// Format visible time range
+		const visibleMs = viewport.width / viewport.pixelsPerMs;
+		debugStats.visibleRange = formatDuration(visibleMs);
+	}
+
+	/**
+	 * Format milliseconds into human-readable duration
+	 */
+	function formatDuration(ms: number): string {
+		const seconds = ms / 1000;
+		const minutes = seconds / 60;
+		const hours = minutes / 60;
+		const days = hours / 24;
+		const years = days / 365.25;
+
+		if (years >= 1) return `${years.toFixed(1)} years`;
+		if (days >= 1) return `${days.toFixed(1)} days`;
+		if (hours >= 1) return `${hours.toFixed(1)} hours`;
+		if (minutes >= 1) return `${minutes.toFixed(1)} min`;
+		return `${seconds.toFixed(1)} sec`;
 	}
 
 	/**
@@ -948,28 +1054,98 @@
 	<!-- Center date indicator (red line) -->
 	<div class="center-line"></div>
 
-	<!-- Debug overlay -->
+	<!-- Debug overlay - Stats for Nerds -->
 	{#if viewport}
 		<div class="debug-overlay">
-			<div>LOD: {viewport.lodLevel}</div>
-			<div>Zoom: {viewport.pixelsPerMs.toExponential(2)}</div>
+			<div class="debug-title">Stats for Nerds</div>
+			<div class="debug-section">
+				<div><span class="label">FPS:</span> {debugStats.fps}</div>
+				<div>
+					<span class="label">Objects:</span>
+					{debugStats.objectsDrawn}
+				</div>
+				<div>
+					<span class="label">Grid Lines:</span>
+					{debugStats.gridLinesCount}
+				</div>
+				<div>
+					<span class="label">Draw Calls:</span>
+					{debugStats.drawCalls}
+				</div>
+			</div>
+			<div class="debug-divider"></div>
+			<div class="debug-section">
+				<div><span class="label">LOD:</span> {viewport.lodLevel}</div>
+				<div>
+					<span class="label">Zoom:</span>
+					{viewport.pixelsPerMs.toExponential(2)}
+				</div>
+				<div>
+					<span class="label">Visible:</span>
+					{debugStats.visibleRange}
+				</div>
+			</div>
+			<div class="debug-divider"></div>
+			<div class="debug-section">
+				<div>
+					<span class="label">Center:</span>
+					{debugStats.centerTime}
+				</div>
+				{#if debugStats.memoryUsage}
+					<div>
+						<span class="label">Memory:</span>
+						{debugStats.memoryUsage}
+					</div>
+				{/if}
+			</div>
 		</div>
 	{/if}
 
-	<!-- Keyboard shortcuts help -->
-	<div class="shortcuts-help">
-		<div class="shortcuts-title">Keyboard Shortcuts</div>
-		<div class="shortcut">
-			<span class="key">←</span><span class="key">→</span> Pan
+	<!-- Toast notification for view changes -->
+	{#key toastKey}
+		{#if toastVisible}
+			<div class="toast" class:visible={toastVisible}>
+				{toastMessage}
+			</div>
+		{/if}
+	{/key}
+
+	<!-- Keyboard shortcuts help (desktop only) -->
+	{#if !isMobile}
+		<div class="shortcuts-help">
+			<div class="shortcuts-title">Keyboard Shortcuts</div>
+			<div class="shortcut">
+				<span class="key">←</span><span class="key">→</span> Pan
+			</div>
+			<div class="shortcut">
+				<span class="key">↑</span><span class="key">↓</span> Zoom
+			</div>
+			<div class="shortcut">
+				<span class="key">⌘</span>+Scroll Zoom
+			</div>
+			<div class="shortcut">
+				<span class="key">⇧</span>+<span class="key">←</span><span
+					class="key">→</span
+				> Jump
+			</div>
+			<div class="shortcut"><span class="key">T</span> Today</div>
+			<div class="shortcut">
+				<span class="key">1</span>-<span class="key">9</span> Presets
+			</div>
 		</div>
-		<div class="shortcut">
-			<span class="key">+</span><span class="key">-</span> Zoom
+	{/if}
+
+	<!-- Mobile gestures help -->
+	{#if isMobile}
+		<div class="mobile-help">
+			<div class="mobile-gesture">
+				<span class="gesture-icon">👆</span> Drag to pan
+			</div>
+			<div class="mobile-gesture">
+				<span class="gesture-icon">🤏</span> Pinch to zoom
+			</div>
 		</div>
-		<div class="shortcut"><span class="key">T</span> Today</div>
-		<div class="shortcut">
-			<span class="key">1</span>-<span class="key">4</span> Presets
-		</div>
-	</div>
+	{/if}
 </div>
 
 <style>
@@ -1063,20 +1239,50 @@
 
 	.debug-overlay {
 		position: absolute;
-		top: 10px;
+		top: 40px;
 		right: 10px;
-		background: rgba(0, 0, 0, 0.7);
+		background: rgba(0, 0, 0, 0.85);
 		color: white;
-		padding: 8px 12px;
-		border-radius: 6px;
-		font-family: monospace;
-		font-size: 12px;
+		padding: 12px 16px;
+		border-radius: 8px;
+		font-family: "SF Mono", "Monaco", "Inconsolata", "Fira Code", monospace;
+		font-size: 11px;
 		pointer-events: none;
 		z-index: 20;
+		min-width: 180px;
+		backdrop-filter: blur(4px);
 	}
 
-	.debug-overlay div {
-		margin: 2px 0;
+	.debug-overlay .debug-title {
+		font-size: 10px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: #888;
+		margin-bottom: 8px;
+		padding-bottom: 6px;
+		border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+	}
+
+	.debug-overlay .debug-section {
+		margin: 4px 0;
+	}
+
+	.debug-overlay .debug-section div {
+		margin: 3px 0;
+		display: flex;
+		justify-content: space-between;
+	}
+
+	.debug-overlay .label {
+		color: #aaa;
+		margin-right: 12px;
+	}
+
+	.debug-overlay .debug-divider {
+		height: 1px;
+		background: rgba(255, 255, 255, 0.1);
+		margin: 8px 0;
 	}
 
 	/* Center date indicator line */
@@ -1157,10 +1363,83 @@
 		text-align: center;
 	}
 
+	/* Toast notification */
+	.toast {
+		position: absolute;
+		bottom: 80px;
+		left: 50%;
+		transform: translateX(-50%);
+		background: rgba(0, 0, 0, 0.85);
+		color: white;
+		padding: 12px 24px;
+		border-radius: 8px;
+		font-size: 16px;
+		font-weight: 600;
+		pointer-events: none;
+		z-index: 100;
+		opacity: 0;
+		backdrop-filter: blur(8px);
+	}
+
+	.toast.visible {
+		opacity: 1;
+		animation: toast-fade 1.5s ease forwards;
+	}
+
+	@keyframes toast-fade {
+		0% {
+			opacity: 1;
+			transform: translateX(-50%) translateY(0);
+		}
+		70% {
+			opacity: 1;
+			transform: translateX(-50%) translateY(0);
+		}
+		100% {
+			opacity: 0;
+			transform: translateX(-50%) translateY(-10px);
+		}
+	}
+
+	/* Mobile gestures help */
+	.mobile-help {
+		position: absolute;
+		bottom: 16px;
+		right: 16px;
+		background: rgba(0, 0, 0, 0.75);
+		color: white;
+		padding: 12px 16px;
+		border-radius: 8px;
+		font-size: 13px;
+		pointer-events: none;
+		z-index: 15;
+	}
+
+	.mobile-gesture {
+		margin: 4px 0;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.gesture-icon {
+		font-size: 16px;
+	}
+
 	/* Hide shortcuts on mobile */
 	@media (max-width: 768px) {
 		.shortcuts-help {
 			display: none;
+		}
+
+		.debug-overlay {
+			font-size: 9px;
+			padding: 8px 10px;
+			min-width: 140px;
+		}
+
+		.debug-overlay .debug-title {
+			font-size: 8px;
 		}
 	}
 </style>

@@ -37,9 +37,17 @@ export class InputHandler {
     private pinchDistance = 0;
     private lastPinchTime = 0;
 
+    // Callback for preset/view changes (for showing toast)
+    public onViewChange: ((viewName: string) => void) | null = null;
+
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
         this.setupEventListeners();
+    }
+
+    /** Get the canvas center X for keyboard zoom */
+    getCanvasCenterX(): number {
+        return this.canvas.clientWidth / 2;
     }
 
     private setupEventListeners() {
@@ -291,40 +299,99 @@ export class InputHandler {
 
     /**
      * KEYBOARD NAVIGATION
+     * 
+     * Arrows: Left/Right = pan, Up/Down = zoom
+     * Shift + Left/Right = jump to prev/next time unit
+     * +/- = zoom in/out
+     * T/Home = go to today
+     * 1-9 = zoom presets
      */
     private handleKeyDown(e: KeyboardEvent) {
         if (e.target instanceof HTMLInputElement) return;
 
+        const centerX = this.getCanvasCenterX();
+
         switch (e.key) {
             case 'ArrowLeft':
-                viewportController.pan(100);
+                if (e.shiftKey) {
+                    viewportController.jumpToPreviousTimeUnit();
+                } else {
+                    viewportController.pan(100);
+                }
                 break;
             case 'ArrowRight':
-                viewportController.pan(-100);
+                if (e.shiftKey) {
+                    viewportController.jumpToNextTimeUnit();
+                } else {
+                    viewportController.pan(-100);
+                }
+                break;
+            case 'ArrowUp':
+                // Zoom in
+                viewportController.zoomAt(centerX, 2);
+                break;
+            case 'ArrowDown':
+                // Zoom out
+                viewportController.zoomAt(centerX, -2);
                 break;
             case '+':
             case '=':
-                viewportController.zoomAt(this.canvas.width / 2, 2); // Faster keyboard zoom
+                viewportController.zoomAt(centerX, 2);
                 break;
             case '-':
-                viewportController.zoomAt(this.canvas.width / 2, -2); // Faster keyboard zoom
+                viewportController.zoomAt(centerX, -2);
                 break;
             case 'Home':
             case 't':
+            case 'T':
                 viewportController.goToToday();
+                this.onViewChange?.('Today');
                 break;
-            case '1':
-                viewportController.setZoomPreset('YEAR');
+            case '1': {
+                const name = viewportController.setZoomPreset('DAY');
+                this.onViewChange?.(name);
                 break;
-            case '2':
-                viewportController.setZoomPreset('MONTH');
+            }
+            case '2': {
+                const name = viewportController.setZoomPreset('WEEK');
+                this.onViewChange?.(name);
                 break;
-            case '3':
-                viewportController.setZoomPreset('WEEK');
+            }
+            case '3': {
+                const name = viewportController.setZoomPreset('MONTH');
+                this.onViewChange?.(name);
                 break;
-            case '4':
-                viewportController.setZoomPreset('DAY');
+            }
+            case '4': {
+                const name = viewportController.setZoomPreset('THREE_MONTH');
+                this.onViewChange?.(name);
                 break;
+            }
+            case '5': {
+                const name = viewportController.setZoomPreset('YEAR');
+                this.onViewChange?.(name);
+                break;
+            }
+            case '6': {
+                const name = viewportController.setZoomPreset('DECADE');
+                this.onViewChange?.(name);
+                break;
+            }
+            case '7': {
+                const name = viewportController.setZoomPreset('LIFE');
+                this.onViewChange?.(name);
+                break;
+            }
+            case '8': {
+                const name = viewportController.setZoomPreset('CENTURY');
+                this.onViewChange?.(name);
+                break;
+            }
+            case '9': {
+                const name = viewportController.setZoomPreset('MILLENNIUM');
+                this.onViewChange?.(name);
+                break;
+            }
         }
     }
 

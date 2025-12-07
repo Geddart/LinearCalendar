@@ -9,21 +9,39 @@ import type { ViewportState } from '$lib/types/Event';
  */
 const ZOOM = {
     /** Pixels per ms when fully zoomed OUT (millennium view - max zoom out) */
-    MIN_PIXELS_PER_MS: 1e-12,
+    MIN_PIXELS_PER_MS: 1e-13,
 
     /** Pixels per ms when fully zoomed IN (~2 minutes visible) */
     MAX_PIXELS_PER_MS: 0.01,
 
-    /** Presets for quick navigation */
+    /** 
+     * Presets for quick navigation (keys 1-9)
+     * Values calibrated to show specific time ranges
+     */
     PRESETS: {
-        CENTURY: 1e-12,
-        DECADE: 1e-11,
-        YEAR: 1e-10,
-        MONTH: 1e-9,
-        WEEK: 4e-9,
-        DAY: 3e-8,
-        HOUR: 5e-7
-    }
+        DAY: 2.5e-5,        // 1: ~26 hours visible
+        WEEK: 3.5e-6,       // 2: ~1 week visible
+        MONTH: 1.2e-6,      // 3: ~1 month visible
+        THREE_MONTH: 4e-7,  // 4: ~3 months visible
+        YEAR: 1e-7,         // 5: ~1 year visible
+        DECADE: 1e-8,       // 6: ~10 years visible
+        LIFE: 3e-9,         // 7: ~80-100 years "lifetime" view
+        CENTURY: 3e-10,     // 8: ~100 years visible
+        MILLENNIUM: 3e-11   // 9: ~1000 years visible
+    },
+
+    /** Human-readable names for each preset */
+    PRESET_NAMES: {
+        DAY: 'Day View',
+        WEEK: 'Week View',
+        MONTH: 'Month View',
+        THREE_MONTH: '3 Month View',
+        YEAR: 'Year View',
+        DECADE: 'Decade View',
+        LIFE: 'Life View',
+        CENTURY: 'Century View',
+        MILLENNIUM: 'Millennium View'
+    } as Record<string, string>
 };
 
 /**
@@ -197,11 +215,133 @@ export class ViewportController {
         this.state.centerTime = Date.now();
         this.updateDerived();
     }
+    /**
+     * Jump to the next time unit boundary based on current zoom level.
+     * Jumps to the next visible "major" grid line based on pixelsPerMs.
+     */
+    jumpToNextTimeUnit() {
+        const date = new Date(this.state.centerTime);
+        const ppm = this.state.pixelsPerMs;
 
-    /** Set zoom to a preset level */
-    setZoomPreset(preset: keyof typeof ZOOM.PRESETS) {
+        // Thresholds based on what's visible as major grid lines
+        // These match the visual appearance of the timeline
+        const HOUR_THRESHOLD = 1e-5;    // Show hours as major when zoomed in this much
+        const DAY_THRESHOLD = 1e-6;     // Show days as major
+        const WEEK_THRESHOLD = 2e-7;    // Show weeks as major
+        const MONTH_THRESHOLD = 5e-8;   // Show months as major
+        const YEAR_THRESHOLD = 5e-9;    // Show years as major
+        const DECADE_THRESHOLD = 5e-10; // Show decades as major
+        const CENTURY_THRESHOLD = 5e-11; // Show centuries as major
+
+        if (ppm >= HOUR_THRESHOLD) {
+            // Hour level - jump to next hour
+            date.setHours(date.getHours() + 1, 0, 0, 0);
+        } else if (ppm >= DAY_THRESHOLD) {
+            // Day level - jump to next day
+            date.setDate(date.getDate() + 1);
+            date.setHours(0, 0, 0, 0);
+        } else if (ppm >= WEEK_THRESHOLD) {
+            // Week level - jump to next week (Sunday)
+            const daysUntilSunday = (7 - date.getDay()) % 7 || 7;
+            date.setDate(date.getDate() + daysUntilSunday);
+            date.setHours(0, 0, 0, 0);
+        } else if (ppm >= MONTH_THRESHOLD) {
+            // Month level - jump to next month
+            date.setMonth(date.getMonth() + 1, 1);
+            date.setHours(0, 0, 0, 0);
+        } else if (ppm >= YEAR_THRESHOLD) {
+            // Year level - jump to next year
+            date.setFullYear(date.getFullYear() + 1, 0, 1);
+            date.setHours(0, 0, 0, 0);
+        } else if (ppm >= DECADE_THRESHOLD) {
+            // Decade level - jump to next decade
+            const nextDecade = Math.ceil((date.getFullYear() + 1) / 10) * 10;
+            date.setFullYear(nextDecade, 0, 1);
+            date.setHours(0, 0, 0, 0);
+        } else if (ppm >= CENTURY_THRESHOLD) {
+            // Century level - jump to next century
+            const nextCentury = Math.ceil((date.getFullYear() + 1) / 100) * 100;
+            date.setFullYear(nextCentury, 0, 1);
+            date.setHours(0, 0, 0, 0);
+        } else {
+            // Millennium level - jump to next millennium
+            const nextMillennium = Math.ceil((date.getFullYear() + 1) / 1000) * 1000;
+            date.setFullYear(nextMillennium, 0, 1);
+            date.setHours(0, 0, 0, 0);
+        }
+
+        this.state.centerTime = date.getTime();
+        this.updateDerived();
+    }
+
+    /**
+     * Jump to the previous time unit boundary based on current zoom level.
+     * Jumps to the previous visible "major" grid line based on pixelsPerMs.
+     */
+    jumpToPreviousTimeUnit() {
+        const date = new Date(this.state.centerTime);
+        const ppm = this.state.pixelsPerMs;
+
+        // Same thresholds as jumpToNextTimeUnit
+        const HOUR_THRESHOLD = 1e-5;
+        const DAY_THRESHOLD = 1e-6;
+        const WEEK_THRESHOLD = 2e-7;
+        const MONTH_THRESHOLD = 5e-8;
+        const YEAR_THRESHOLD = 5e-9;
+        const DECADE_THRESHOLD = 5e-10;
+        const CENTURY_THRESHOLD = 5e-11;
+
+        if (ppm >= HOUR_THRESHOLD) {
+            // Hour level - jump to previous hour
+            date.setHours(date.getHours() - 1, 0, 0, 0);
+        } else if (ppm >= DAY_THRESHOLD) {
+            // Day level - jump to previous day
+            date.setDate(date.getDate() - 1);
+            date.setHours(0, 0, 0, 0);
+        } else if (ppm >= WEEK_THRESHOLD) {
+            // Week level - jump to previous week (Sunday)
+            const daysSinceSunday = date.getDay() || 7;
+            date.setDate(date.getDate() - daysSinceSunday);
+            date.setHours(0, 0, 0, 0);
+        } else if (ppm >= MONTH_THRESHOLD) {
+            // Month level - jump to previous month
+            date.setMonth(date.getMonth() - 1, 1);
+            date.setHours(0, 0, 0, 0);
+        } else if (ppm >= YEAR_THRESHOLD) {
+            // Year level - jump to previous year
+            date.setFullYear(date.getFullYear() - 1, 0, 1);
+            date.setHours(0, 0, 0, 0);
+        } else if (ppm >= DECADE_THRESHOLD) {
+            // Decade level - jump to previous decade
+            const prevDecade = Math.floor((date.getFullYear() - 1) / 10) * 10;
+            date.setFullYear(prevDecade, 0, 1);
+            date.setHours(0, 0, 0, 0);
+        } else if (ppm >= CENTURY_THRESHOLD) {
+            // Century level - jump to previous century
+            const prevCentury = Math.floor((date.getFullYear() - 1) / 100) * 100;
+            date.setFullYear(prevCentury, 0, 1);
+            date.setHours(0, 0, 0, 0);
+        } else {
+            // Millennium level - jump to previous millennium
+            const prevMillennium = Math.floor((date.getFullYear() - 1) / 1000) * 1000;
+            date.setFullYear(prevMillennium, 0, 1);
+            date.setHours(0, 0, 0, 0);
+        }
+
+        this.state.centerTime = date.getTime()
+        this.updateDerived();
+    }
+
+    /** Set zoom to a preset level, returns the human-readable name */
+    setZoomPreset(preset: keyof typeof ZOOM.PRESETS): string {
         this.state.pixelsPerMs = ZOOM.PRESETS[preset];
         this.updateDerived();
+        return ZOOM.PRESET_NAMES[preset] || preset;
+    }
+
+    /** Get the human-readable name for a preset */
+    static getPresetName(preset: keyof typeof ZOOM.PRESETS): string {
+        return ZOOM.PRESET_NAMES[preset] || preset;
     }
 
     /** Get current state (for rendering) */
