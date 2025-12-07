@@ -122,6 +122,12 @@
 					canvas.clientHeight,
 				);
 			}
+
+			// Update mobile status on resize
+			isMobile =
+				/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+					navigator.userAgent,
+				) || window.matchMedia("(max-width: 768px)").matches;
 		};
 		window.addEventListener("resize", handleResize);
 
@@ -453,7 +459,10 @@
 				const screenX =
 					halfWidth + (currentTime - centerTime) * pixelsPerMs;
 
-				if (screenX > CONTEXT_COL_WIDTH && screenX < width) {
+				if (
+					screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
+					screenX < width
+				) {
 					let label = "";
 					let isMajor = false;
 
@@ -613,7 +622,10 @@
 						halfWidth +
 						(monthDate.getTime() - centerTime) * pixelsPerMs;
 
-					if (screenX > CONTEXT_COL_WIDTH && screenX < width) {
+					if (
+						screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
+						screenX < width
+					) {
 						// Check if there's already a line very close (to prevent duplicates)
 						const hasDuplicate = newGridLines.some(
 							(l) => Math.abs(l.x - screenX) < 3,
@@ -665,7 +677,10 @@
 						halfWidth +
 						(yearDate.getTime() - centerTime) * pixelsPerMs;
 
-					if (screenX > CONTEXT_COL_WIDTH && screenX < width) {
+					if (
+						screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
+						screenX < width
+					) {
 						// Update the January line to show year instead
 						const existing = newGridLines.find(
 							(l) => Math.abs(l.x - screenX) < 3,
@@ -693,7 +708,10 @@
 						halfWidth +
 						(dayDate.getTime() - centerTime) * pixelsPerMs;
 
-					if (screenX > CONTEXT_COL_WIDTH && screenX < width) {
+					if (
+						screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
+						screenX < width
+					) {
 						const weekdayShort = dayDate.toLocaleString("en-US", {
 							weekday: "short",
 						});
@@ -813,7 +831,10 @@
 				const screenX =
 					halfWidth + (currentTime - centerTime) * pixelsPerMs;
 
-				if (screenX > CONTEXT_COL_WIDTH && screenX < width) {
+				if (
+					screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
+					screenX < width
+				) {
 					// Check if this sub-unit aligns with a parent boundary (should be skipped)
 					let isParentBoundary = false;
 					switch (currentLOD.subUnit) {
@@ -995,7 +1016,10 @@
 							halfWidth +
 							(currentTime - centerTime) * pixelsPerMs;
 
-						if (screenX > CONTEXT_COL_WIDTH && screenX < width) {
+						if (
+							screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
+							screenX < width
+						) {
 							// Calculate proximity-based fade
 							const fadeDistance = 40;
 							let proximityFactor = 1.0;
@@ -1076,6 +1100,9 @@
 		});
 	}
 
+	// Reactive layout offset
+	$: contextOffset = isMobile ? 0 : CONTEXT_COL_WIDTH;
+
 	function getImportanceThreshold(lodLevel: number): number {
 		return Math.pow(lodLevel / 10, 2);
 	}
@@ -1085,13 +1112,13 @@
 	<canvas bind:this={canvas}></canvas>
 
 	<!-- Grid lines (HTML overlay) with smooth LOD transitions -->
-	<div class="grid-overlay" style="left: {CONTEXT_COL_WIDTH}px;">
+	<div class="grid-overlay" style="left: {contextOffset}px;">
 		{#each gridLines as line}
 			<div
 				class="grid-line"
 				class:major={line.isMajor}
 				class:sub-unit={line.isSubUnit}
-				style="left: {line.x - CONTEXT_COL_WIDTH}px; 
+				style="left: {line.x - contextOffset}px; 
 					   opacity: {line.opacity}; 
 					   height: {line.lineHeight * 100}%;
 					   top: 0;"
@@ -1508,19 +1535,79 @@
 	}
 
 	/* Hide shortcuts on mobile */
+	/* Mobile Styles */
 	@media (max-width: 768px) {
 		.shortcuts-help {
 			display: none;
 		}
 
+		/* Transform context column into a floating card */
+		.context-column {
+			top: 16px;
+			left: 16px;
+			bottom: auto;
+			right: auto;
+			width: auto !important; /* Override inline width */
+			min-width: 140px;
+			background: rgba(255, 255, 255, 0.95);
+			border: 1px solid rgba(0, 0, 0, 0.05); /* Subtle border instead of right border */
+			border-radius: 12px;
+			padding: 12px 16px;
+			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); /* Float effect */
+			pointer-events: none; /* Let clicks pass through empty areas */
+		}
+
+		/* Re-enable pointer events for content */
+		.context-column > * {
+			pointer-events: auto;
+		}
+
+		.context-year {
+			font-size: 20px; /* Slightly smaller */
+			margin-bottom: 2px;
+		}
+
+		.context-month {
+			font-size: 14px;
+		}
+
+		/* Reposition Today button to bottom-left fixed position */
+		.today-button {
+			position: fixed;
+			bottom: 24px;
+			left: 24px;
+			right: auto;
+			top: auto;
+			width: auto;
+			z-index: 100;
+			box-shadow: 0 4px 12px rgba(229, 57, 53, 0.3); /* Red glow match */
+			padding: 10px 16px;
+			font-size: 14px;
+		}
+
+		/* Reposition Stats for Nerds to bottom-right, less intrusive */
 		.debug-overlay {
 			font-size: 9px;
 			padding: 8px 10px;
 			min-width: 140px;
+			top: auto;
+			bottom: 130px; /* Increased from 80px to clear the usage help */
+			right: 16px;
+			background: rgba(0, 0, 0, 0.8); /* Slightly more transparent */
+			backdrop-filter: blur(8px);
 		}
 
 		.debug-overlay .debug-title {
 			font-size: 8px;
+		}
+
+		/* Ensure usage help is visible */
+		.mobile-help {
+			bottom: 24px;
+			right: 24px;
+			background: rgba(0, 0, 0, 0.85);
+			backdrop-filter: blur(8px);
+			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 		}
 	}
 </style>
