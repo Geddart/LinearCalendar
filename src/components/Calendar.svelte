@@ -51,6 +51,9 @@
 	// Mobile detection
 	let isMobile = false;
 
+	// DEBUG: Track last centerTime to only log when panning
+	let debugLastCenterTime = 0;
+
 	function showToast(message: string) {
 		// Increment key to force Svelte to re-create the element (restarts animation)
 		toastKey++;
@@ -64,6 +67,7 @@
 
 	// Time grid state - extended for smooth LOD transitions
 	let gridLines: {
+		key: string; // Unique identifier for stable rendering
 		x: number;
 		label: string;
 		isMajor: boolean;
@@ -72,6 +76,7 @@
 		isSubUnit: boolean; // Is this a sub-unit indicator?
 		fontWeight: number; // Variable font weight (400-700) for smooth transitions
 		fontSize: number; // Font size in pixels (11-13) for smooth transitions
+		labelOpacity?: number; // Optional label-specific opacity for hour labels
 	}[] = [];
 	let contextLabels = { year: "", month: "", dayNum: "", weekday: "" };
 	let showMonth = false;
@@ -527,16 +532,8 @@
 							label = `${currentDate.getDate()} ${weekdayShort}`;
 							break;
 						case "hour":
-							// Hour labels - only show if spacing is sufficient
-							// This prevents the overlapping text mess when zoomed out
-							const pixelSpacingPerHour = HOUR_MS * pixelsPerMs;
-							const HOUR_LABEL_MIN_SPACING = 45; // px - below this, no labels
-							const HOUR_LABEL_FULL_SPACING = 70; // px - above this, full opacity
-							if (pixelSpacingPerHour >= HOUR_LABEL_MIN_SPACING) {
-								label = `${currentDate.getHours()}h`;
-							} else {
-								label = ""; // Hide label when too crowded
-							}
+							// Always set label - opacity will control visibility
+							label = `${currentDate.getHours()}h`;
 							break;
 					}
 
@@ -598,32 +595,53 @@
 					// Font size: 11px to 13px based on importance
 					const fontSize = 11 + importance * 2;
 
-					// Calculate opacity - for hours, use spacing-based progressive opacity
+					// Calculate continuous opacity for hour labels
+					// Each hour has a "required spacing" inversely related to importance
+					// Opacity fades smoothly from 0 to 1 as spacing approaches required value
 					let lineOpacity = 1;
+					let labelOpacity = 1;
+
 					if (currentLOD.unit === "hour") {
 						const hourSpacing = HOUR_MS * pixelsPerMs;
-						const MIN_SPACING = 45;
-						const FULL_SPACING = 70;
-						// Fade in from MIN to FULL spacing
-						lineOpacity = Math.min(
+
+						// Required spacing based on hour importance
+						// 0, 12 need less space (appear first), regular hours need more
+						let requiredSpacing: number;
+						if (hour % 12 === 0) {
+							requiredSpacing = 10; // 0h and 12h
+						} else if (hour % 6 === 0) {
+							requiredSpacing = 25; // 6h and 18h
+						} else if (hour % 3 === 0) {
+							requiredSpacing = 35; // 3, 9, 15, 21
+						} else {
+							requiredSpacing = 45; // all other hours
+						}
+
+						// Calculate continuous opacity: 0 at requiredSpacing/2, 1 at requiredSpacing
+						// This creates a smooth fade-in as you zoom in
+						const fadeStart = requiredSpacing * 0.5;
+						const fadeEnd = requiredSpacing;
+						labelOpacity = Math.min(
 							1,
 							Math.max(
 								0,
-								(hourSpacing - MIN_SPACING) /
-									(FULL_SPACING - MIN_SPACING),
+								(hourSpacing - fadeStart) /
+									(fadeEnd - fadeStart),
 							),
 						);
 					}
 
 					newGridLines.push({
+						key: `lod-${currentDate.getTime()}`,
 						x: screenX,
-						label,
+						label: labelOpacity > 0.05 ? label : "", // Hide label if nearly invisible
 						isMajor: importance > 0.7, // Keep for color styling
 						opacity: lineOpacity,
 						lineHeight: 1,
 						isSubUnit: false,
 						fontWeight: finalWeight,
 						fontSize: Math.round(fontSize),
+						labelOpacity: labelOpacity, // New field for label-specific opacity
 					});
 				}
 
@@ -690,6 +708,7 @@
 
 						if (!hasDuplicate) {
 							newGridLines.push({
+								key: `month-${monthDate.getTime()}`,
 								x: screenX,
 								label:
 									monthDate.getMonth() === 0
@@ -781,6 +800,7 @@
 
 						if (!hasDuplicate) {
 							newGridLines.push({
+								key: `day-${dayDate.getTime()}`,
 								x: screenX,
 								label: dayLabel,
 								isMajor: true,
@@ -809,15 +829,17 @@
 
 		// Helper to add sub-unit indicators that fade in as you zoom
 		function addSubUnitLines() {
+			// Special handling for minutes - always call (uses its own spacing-based visibility)
+			// This must come before transitionProgress check because hour LOD has nextThreshold: Infinity
+			// which causes transitionProgress calculation to fail
+			if (currentLOD.subUnit === "minute") {
+				addProgressiveMinutes(1); // Full opacity - spacing controls visibility
+				return;
+			}
+
 			if (!currentLOD.subUnit || transitionProgress < 0.3) return;
 
 			const subOpacity = Math.min(1, (transitionProgress - 0.3) / 0.5); // Fade in from 30% to 80%
-
-			// Special handling for minutes - progressive disclosure
-			if (currentLOD.subUnit === "minute") {
-				addProgressiveMinutes(subOpacity);
-				return;
-			}
 
 			// Use calendar-based iteration for other sub-units
 			const startDate = new Date(startTime);
@@ -888,10 +910,7 @@
 				const screenX =
 					halfWidth + (currentTime - centerTime) * pixelsPerMs;
 
-				if (
-					screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
-					screenX < width
-				) {
+				if (screenX > 0 && screenX < width) {
 					// Check if this sub-unit aligns with a parent boundary (should be skipped)
 					let isParentBoundary = false;
 					switch (currentLOD.subUnit) {
@@ -973,19 +992,66 @@
 								subLabel = `${currentDate.getDate()} ${dayWeekday}`;
 								break;
 							case "hour":
-								subLabel = `${currentDate.getHours()}h`;
+								// Hour labels - continuous opacity based on spacing/importance
+								const subHourSpacing = HOUR_MS * pixelsPerMs;
+								const subHourValue = currentDate.getHours();
+
+								// Required spacing based on hour importance
+								let subRequiredSpacing: number;
+								if (subHourValue % 12 === 0) {
+									subRequiredSpacing = 10; // 0h and 12h
+								} else if (subHourValue % 6 === 0) {
+									subRequiredSpacing = 25; // 6h and 18h
+								} else if (subHourValue % 3 === 0) {
+									subRequiredSpacing = 35; // 3, 9, 15, 21
+								} else {
+									subRequiredSpacing = 45; // all other hours
+								}
+
+								// Calculate continuous label opacity
+								const subFadeStart = subRequiredSpacing * 0.5;
+								const subFadeEnd = subRequiredSpacing;
+								const subLabelOpacity = Math.min(
+									1,
+									Math.max(
+										0,
+										(subHourSpacing - subFadeStart) /
+											(subFadeEnd - subFadeStart),
+									),
+								);
+
+								// Always set label, but store opacity for use below
+								subLabel = `${subHourValue}h`;
+
+								// We need to pass this opacity - store temporarily
+								(currentDate as any)._labelOpacity =
+									subLabelOpacity;
 								break;
 						}
 
+						// Get the label opacity if it was set for hours
+						const hourLabelOpacity = (currentDate as any)
+							._labelOpacity;
+						delete (currentDate as any)._labelOpacity;
+
 						newGridLines.push({
+							key: `sub-${currentTime}`,
 							x: screenX,
-							label: subLabel,
+							label:
+								hourLabelOpacity !== undefined &&
+								hourLabelOpacity < 0.05
+									? ""
+									: subLabel,
 							isMajor: false,
 							opacity: finalOpacity,
 							lineHeight: 1,
 							isSubUnit: true,
 							fontWeight: 400 + Math.round(finalOpacity * 150),
 							fontSize: 11,
+							labelOpacity:
+								hourLabelOpacity !== undefined
+									? hourLabelOpacity * finalOpacity
+									: finalOpacity,
 						});
 					}
 				}
@@ -1019,8 +1085,14 @@
 			}
 		}
 
-		// Progressive minute disclosure: :30 → :15/:45 → :10/:20/:40/:50 → :05s → all
+		// Continuous minute visibility based on spacing and importance
 		function addProgressiveMinutes(baseOpacity: number) {
+			const MINUTE_MS = 60000;
+			const minuteSpacing = MINUTE_MS * pixelsPerMs;
+
+			// If spacing is too small for any minutes, skip entirely
+			if (minuteSpacing < 3) return;
+
 			const startDate = new Date(startTime);
 			// Start at the beginning of the hour
 			let hourDate = new Date(
@@ -1031,80 +1103,77 @@
 				0,
 			);
 
-			// Define progressive minute tiers with their appearance thresholds
-			// Each tier fades in at a different transitionProgress level
-			const minuteTiers = [
-				{ minutes: [30], threshold: 0.3 }, // :30 appears first
-				{ minutes: [15, 45], threshold: 0.5 }, // :15, :45 appear next
-				{ minutes: [10, 20, 40, 50], threshold: 0.7 }, // 10-minute intervals
-				{ minutes: [5, 25, 35, 55], threshold: 0.85 }, // 5-minute intervals
-				{
-					minutes: [
-						1, 2, 3, 4, 6, 7, 8, 9, 11, 12, 13, 14, 16, 17, 18, 19,
-						21, 22, 23, 24, 26, 27, 28, 29, 31, 32, 33, 34, 36, 37,
-						38, 39, 41, 42, 43, 44, 46, 47, 48, 49, 51, 52, 53, 54,
-						56, 57, 58, 59,
-					],
-					threshold: 0.95,
-				}, // Individual minutes
-			];
-
 			while (hourDate.getTime() < endTime) {
-				for (const tier of minuteTiers) {
-					// Skip tier if transition hasn't reached its threshold
-					if (transitionProgress < tier.threshold) continue;
+				// Iterate through all 60 minutes
+				for (let minute = 1; minute < 60; minute++) {
+					const minuteDate = new Date(hourDate.getTime());
+					minuteDate.setMinutes(minute);
 
-					// Calculate tier-specific opacity (fade in from threshold to threshold + 0.15)
-					const tierProgress = Math.min(
-						1,
-						(transitionProgress - tier.threshold) / 0.15,
-					);
-					const tierOpacity = baseOpacity * tierProgress;
+					const currentTime = minuteDate.getTime();
+					if (currentTime < startTime || currentTime > endTime)
+						continue;
 
-					for (const minute of tier.minutes) {
-						const minuteDate = new Date(hourDate.getTime());
-						minuteDate.setMinutes(minute);
+					const screenX =
+						halfWidth + (currentTime - centerTime) * pixelsPerMs;
 
-						const currentTime = minuteDate.getTime();
-						if (currentTime < startTime || currentTime > endTime)
-							continue;
+					if (screenX > 0 && screenX < width) {
+						// Calculate required spacing based on minute importance
+						// :30 appears first, then :15/:45, then :10 marks, then :05, then all
+						let requiredSpacing: number;
+						if (minute === 30) {
+							requiredSpacing = 5; // :30 needs least space - appears very early
+						} else if (minute === 15 || minute === 45) {
+							requiredSpacing = 10; // :15, :45
+						} else if (minute % 10 === 0) {
+							requiredSpacing = 18; // :10, :20, :40, :50
+						} else if (minute % 5 === 0) {
+							requiredSpacing = 25; // :05, :25, :35, :55
+						} else {
+							requiredSpacing = 35; // all other minutes
+						}
 
-						const screenX =
-							halfWidth +
-							(currentTime - centerTime) * pixelsPerMs;
+						// Calculate continuous opacity based on spacing
+						const fadeStart = requiredSpacing * 0.5;
+						const fadeEnd = requiredSpacing;
+						let minuteOpacity = Math.min(
+							1,
+							Math.max(
+								0,
+								(minuteSpacing - fadeStart) /
+									(fadeEnd - fadeStart),
+							),
+						);
 
+						// Also factor in base opacity (from sub-unit fade)
+						minuteOpacity *= baseOpacity;
+
+						// Use spacing-based opacity directly (no proximity fade - it causes flicker when panning)
+						const finalOpacity = minuteOpacity;
+
+						// DEBUG: Log :15 visibility to trace flickering (only when panning)
 						if (
-							screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
-							screenX < width
+							(minute === 15 || minute === 45) &&
+							centerTime !== debugLastCenterTime
 						) {
-							// Calculate proximity-based fade
-							const fadeDistance = 40;
-							let proximityFactor = 1.0;
-							for (const line of newGridLines) {
-								const dist = Math.abs(line.x - screenX);
-								if (dist < fadeDistance) {
-									proximityFactor = Math.min(
-										proximityFactor,
-										dist / fadeDistance,
-									);
-								}
-							}
+							console.log(
+								`Minute :${minute} - spacing: ${minuteSpacing.toFixed(2)}px, required: ${requiredSpacing}px, fadeStart: ${fadeStart.toFixed(1)}px, opacity: ${finalOpacity.toFixed(3)}, visible: ${finalOpacity > 0.05}`,
+							);
+						}
 
-							const finalOpacity = tierOpacity * proximityFactor;
-
-							if (finalOpacity > 0.05) {
-								newGridLines.push({
-									x: screenX,
-									label: `:${minute.toString().padStart(2, "0")}`,
-									isMajor: false,
-									opacity: finalOpacity,
-									lineHeight: 1,
-									isSubUnit: true,
-									fontWeight:
-										400 + Math.round(finalOpacity * 150),
-									fontSize: 10,
-								});
-							}
+						if (finalOpacity > 0.05) {
+							newGridLines.push({
+								key: `min-${currentTime}`,
+								x: screenX,
+								label: `:${minute.toString().padStart(2, "0")}`,
+								isMajor: false,
+								opacity: finalOpacity,
+								lineHeight: 1,
+								isSubUnit: true,
+								fontWeight:
+									400 + Math.round(finalOpacity * 150),
+								fontSize: 10,
+								labelOpacity: finalOpacity,
+							});
 						}
 					}
 				}
@@ -1118,6 +1187,9 @@
 		addSubUnitLines();
 
 		gridLines = newGridLines;
+
+		// DEBUG: Update last center time to throttle logging
+		debugLastCenterTime = centerTime;
 	}
 
 	function getVisibleEvents(): RenderableEvent[] {
@@ -1157,8 +1229,8 @@
 		});
 	}
 
-	// Reactive layout offset
-	$: contextOffset = isMobile ? 0 : CONTEXT_COL_WIDTH;
+	// Reactive layout offset - always 0 since context column is now a floating card
+	$: contextOffset = 0;
 
 	function getImportanceThreshold(lodLevel: number): number {
 		return Math.pow(lodLevel / 10, 2);
@@ -1170,7 +1242,7 @@
 
 	<!-- Grid lines (HTML overlay) with smooth LOD transitions -->
 	<div class="grid-overlay" style="left: {contextOffset}px;">
-		{#each gridLines as line}
+		{#each gridLines as line (line.key)}
 			<div
 				class="grid-line"
 				class:major={line.isMajor}
@@ -1184,7 +1256,8 @@
 					<span
 						class="grid-label"
 						class:major={line.isMajor}
-						style="opacity: {line.opacity}; font-weight: {line.fontWeight}; font-size: {line.fontSize}px;"
+						style="opacity: {line.labelOpacity ??
+							line.opacity}; font-weight: {line.fontWeight}; font-size: {line.fontSize}px;"
 						>{line.label}</span
 					>
 				{/if}
@@ -1370,12 +1443,17 @@
 
 	.context-column {
 		position: absolute;
-		top: 0;
-		left: 0;
-		bottom: 0;
+		top: 16px;
+		left: 16px;
+		bottom: auto;
+		right: auto;
+		width: auto !important; /* Override inline width */
+		min-width: 140px;
 		background: rgba(255, 255, 255, 0.95);
-		border-right: 1px solid #ddd;
-		padding: 16px 12px;
+		border: 1px solid rgba(0, 0, 0, 0.05);
+		border-radius: 12px;
+		padding: 12px 16px;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 		z-index: 10;
 	}
 
@@ -1463,21 +1541,25 @@
 		z-index: 5;
 	}
 
-	/* Today button */
+	/* Today button - fixed position like mobile */
 	.today-button {
-		position: absolute;
-		bottom: 16px;
-		left: 12px;
-		right: 12px;
-		padding: 8px 12px;
+		position: fixed;
+		bottom: 24px;
+		left: 24px;
+		right: auto;
+		width: auto;
+		padding: 10px 16px;
 		background: #e53935;
 		color: white;
 		border: none;
 		border-radius: 6px;
-		font-size: 13px;
+		font-size: 14px;
 		font-weight: 600;
 		cursor: pointer;
 		transition: background 0.2s;
+		z-index: 100;
+		box-shadow: 0 4px 12px rgba(229, 57, 53, 0.3);
+		pointer-events: auto;
 	}
 
 	.today-button:hover {
@@ -1598,20 +1680,9 @@
 			display: none;
 		}
 
-		/* Transform context column into a floating card */
+		/* Mobile adjustments for floating card */
 		.context-column {
-			top: 16px;
-			left: 16px;
-			bottom: auto;
-			right: auto;
-			width: auto !important; /* Override inline width */
-			min-width: 140px;
-			background: rgba(255, 255, 255, 0.95);
-			border: 1px solid rgba(0, 0, 0, 0.05); /* Subtle border instead of right border */
-			border-radius: 12px;
-			padding: 12px 16px;
-			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); /* Float effect */
-			pointer-events: none; /* Let clicks pass through empty areas */
+			pointer-events: none; /* Let clicks pass through empty areas on mobile */
 		}
 
 		/* Re-enable pointer events for content */
@@ -1620,25 +1691,11 @@
 		}
 
 		.context-year {
-			font-size: 20px; /* Slightly smaller */
+			font-size: 20px; /* Slightly smaller on mobile */
 			margin-bottom: 2px;
 		}
 
 		.context-month {
-			font-size: 14px;
-		}
-
-		/* Reposition Today button to bottom-left fixed position */
-		.today-button {
-			position: fixed;
-			bottom: 24px;
-			left: 24px;
-			right: auto;
-			top: auto;
-			width: auto;
-			z-index: 100;
-			box-shadow: 0 4px 12px rgba(229, 57, 53, 0.3); /* Red glow match */
-			padding: 10px 16px;
 			font-size: 14px;
 		}
 
