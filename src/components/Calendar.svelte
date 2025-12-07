@@ -10,6 +10,10 @@
 		generateTodayEvents,
 	} from "$lib/api/MockDataProvider";
 	import { hexToRgb } from "$lib/utils/colorUtils";
+	import {
+		calculateTimeGrid,
+		type GridLine,
+	} from "$lib/rendering/TimeGridRenderer";
 	import type {
 		ViewportState,
 		CalendarEvent,
@@ -17,7 +21,10 @@
 	} from "$lib/types/Event";
 	import { DEFAULT_LANES } from "$lib/types/Event";
 	import EventDetailPanel from "./EventDetailPanel.svelte";
+	import DebugOverlay from "./DebugOverlay.svelte";
+	import Toast from "./Toast.svelte";
 	import { hitTest, selectEvent } from "$lib/events/EventInteraction";
+	import { eventStore } from "$lib/events/EventStore";
 
 	let canvas: HTMLCanvasElement;
 	let ctx: WebGLContext;
@@ -68,20 +75,25 @@
 		}, 1500);
 	}
 
-	// Time grid state - extended for smooth LOD transitions
-	let gridLines: {
-		key: string; // Unique identifier for stable rendering
-		x: number;
-		label: string;
-		isMajor: boolean;
-		opacity: number; // For fade transitions (0-1)
-		lineHeight: number; // For growing sub-indicators (0-1, 1 = full height)
-		isSubUnit: boolean; // Is this a sub-unit indicator?
-		fontWeight: number; // Variable font weight (400-700) for smooth transitions
-		fontSize: number; // Font size in pixels (11-13) for smooth transitions
-		labelOpacity?: number; // Optional label-specific opacity for hour labels
-	}[] = [];
+	// Time grid state - now using imported GridLine type
+	let gridLines: GridLine[] = [];
 	let contextLabels = { year: "", month: "", dayNum: "", weekday: "" };
+
+	// Memoization cache for updateTimeGrid (prevent recalculating every frame)
+	let lastGridConfig = {
+		pixelsPerMs: 0,
+		centerTime: 0,
+		width: 0,
+	};
+
+	// Memoization cache for getVisibleEvents (prevent filtering/mapping every frame)
+	let lastVisibleEventsConfig = {
+		startTime: 0,
+		endTime: 0,
+		lodLevel: 0,
+	};
+	let cachedVisibleEvents: RenderableEvent[] = [];
+
 	let showMonth = false;
 	let showDay = false;
 
@@ -125,12 +137,13 @@
 				navigator.userAgent,
 			) || window.matchMedia("(max-width: 768px)").matches;
 
-		// Generate events
+		// Generate events and add to EventStore for O(log n) queries
 		events = [
 			...generateLifeEvents(),
 			...generateMockEvents(100),
 			...generateTodayEvents(),
 		];
+		eventStore.addEvents(events);
 
 		// Pre-compute lane assignments ONCE - this prevents jumping
 		computeLaneAssignments();
@@ -261,658 +274,81 @@
 	}
 
 	/**
-	 * CONTINUOUS SPACING-BASED TIME GRID
-	 *
-	 * Instead of discrete LOD levels with thresholds, this system renders
-	 * ALL time units that have sufficient pixel spacing. Each unit type
-	 * fades in/out continuously based on its spacing.
+	 * Update time grid using extracted renderer module.
+	 * Uses memoization to skip recalculation when viewport hasn't changed significantly.
 	 */
 	function updateTimeGrid() {
 		if (!viewport) return;
 
-		const { startTime, endTime, centerTime, pixelsPerMs, width } = viewport;
-		const halfWidth = width / 2;
+		// Memoization: skip recalculation if viewport hasn't changed significantly
+		const zoomChanged =
+			Math.abs(viewport.pixelsPerMs - lastGridConfig.pixelsPerMs) /
+				viewport.pixelsPerMs >
+			0.001;
+		const panChanged =
+			Math.abs(viewport.centerTime - lastGridConfig.centerTime) *
+				viewport.pixelsPerMs >
+			0.5;
+		const sizeChanged = viewport.width !== lastGridConfig.width;
 
-		// Time constants
-		const MINUTE_MS = 60000;
-		const HOUR_MS = 3600000;
-		const DAY_MS = 86400000;
-		const WEEK_MS = 604800000;
-		const MONTH_MS = 2628000000; // Average month
-		const YEAR_MS = 31536000000;
-		const DECADE_MS = YEAR_MS * 10;
-		const CENTURY_MS = YEAR_MS * 100;
-
-		// Calculate pixel spacing for each time unit
-		const spacings = {
-			minute: MINUTE_MS * pixelsPerMs,
-			hour: HOUR_MS * pixelsPerMs,
-			day: DAY_MS * pixelsPerMs,
-			week: WEEK_MS * pixelsPerMs,
-			month: MONTH_MS * pixelsPerMs,
-			year: YEAR_MS * pixelsPerMs,
-			decade: DECADE_MS * pixelsPerMs,
-			century: CENTURY_MS * pixelsPerMs,
-		};
-
-		// Minimum readable spacing (pixels) for each unit type
-		const minSpacing: Record<string, number> = {
-			minute: 25,
-			hour: 35,
-			day: 50,
-			week: 45,
-			month: 30,
-			year: 25,
-			decade: 30,
-			century: 40,
-		};
-
-		// Calculate opacity based on spacing
-		const calculateOpacity = (
-			spacing: number,
-			required: number,
-		): number => {
-			const fadeStart = required * 0.4;
-			const fadeEnd = required;
-			if (spacing < fadeStart) return 0;
-			if (spacing >= fadeEnd) return 1;
-			return (spacing - fadeStart) / (fadeEnd - fadeStart);
-		};
-
-		// ISO week number helper
-		const getISOWeek = (d: Date): number => {
-			const date = new Date(d.getTime());
-			date.setHours(0, 0, 0, 0);
-			date.setDate(date.getDate() + 3 - ((date.getDay() + 6) % 7));
-			const week1 = new Date(date.getFullYear(), 0, 4);
-			return (
-				1 +
-				Math.round(
-					((date.getTime() - week1.getTime()) / 86400000 -
-						3 +
-						((week1.getDay() + 6) % 7)) /
-						7,
-				)
-			);
-		};
-
-		// Context labels (for the floating card)
-		const centerDate = new Date(centerTime);
-		contextLabels = {
-			year: centerDate.getFullYear().toString(),
-			month: `${centerDate.toLocaleString("en-US", { month: "long" })} ${centerDate.getDate()}`,
-			dayNum: "",
-			weekday: centerDate.toLocaleString("en-US", { weekday: "long" }),
-		};
-
-		const newGridLines: typeof gridLines = [];
-
-		// Track unit hierarchy for line darkness (larger units = darker)
-		const unitHierarchy: Record<string, number> = {
-			century: 1.0,
-			decade: 0.9,
-			year: 0.85,
-			month: 0.6,
-			week: 0.5,
-			day: 0.4,
-			hour: 0.3,
-			minute: 0.2,
-		};
-
-		// Helper to add grid lines for a time unit type
-		function addUnitLines(
-			unitName: string,
-			opacity: number,
-			getLabel: (date: Date) => string,
-			getImportance: (date: Date) => number,
-			alignDate: (startDate: Date) => Date,
-			incrementDate: (date: Date) => void,
+		if (
+			!zoomChanged &&
+			!panChanged &&
+			!sizeChanged &&
+			gridLines.length > 0
 		) {
-			if (opacity < 0.01) return;
-
-			const startDate = new Date(startTime);
-			let currentDate = alignDate(startDate);
-
-			while (currentDate.getTime() < endTime) {
-				const currentTime = currentDate.getTime();
-				const screenX =
-					halfWidth + (currentTime - centerTime) * pixelsPerMs;
-
-				if (
-					screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
-					screenX < width
-				) {
-					const importance = getImportance(currentDate);
-					const label = getLabel(currentDate);
-					const fontWeight = Math.round(400 + importance * 250);
-					const fontSize = Math.round(10 + importance * 3);
-					const finalOpacity = opacity * (0.5 + importance * 0.5);
-
-					// Proximity check: skip if a label already exists within 15px
-					// This prevents stacking (e.g., year + month + day at Jan 1)
-					const MIN_LABEL_DISTANCE = 15;
-					const tooClose = newGridLines.some(
-						(line) =>
-							Math.abs(line.x - screenX) < MIN_LABEL_DISTANCE,
-					);
-
-					if (!tooClose) {
-						// Use unit hierarchy to determine if line is major (darker)
-						const hierarchyLevel = unitHierarchy[unitName] || 0.5;
-						const isMajorLine = hierarchyLevel >= 0.85; // year, decade, century are major
-						const isSubLine = hierarchyLevel <= 0.4; // day, hour, minute are sub-units
-
-						newGridLines.push({
-							key: `${unitName}-${currentTime}`,
-							x: screenX,
-							label: label,
-							isMajor: isMajorLine,
-							opacity: finalOpacity,
-							lineHeight: 1,
-							isSubUnit: isSubLine,
-							fontWeight: fontWeight,
-							fontSize: fontSize,
-							labelOpacity: finalOpacity,
-						});
-					}
-				}
-
-				incrementDate(currentDate);
-			}
+			return; // Use cached result
 		}
 
-		// CENTURY LABELS
-		if (spacings.century > minSpacing.century * 0.4) {
-			const opacity = calculateOpacity(
-				spacings.century,
-				minSpacing.century,
-			);
-			addUnitLines(
-				"century",
-				opacity,
-				(d) => d.getFullYear().toString(),
-				() => 1.0,
-				(d) => new Date(Math.floor(d.getFullYear() / 100) * 100, 0, 1),
-				(d) => d.setFullYear(d.getFullYear() + 100),
-			);
-		}
+		// Update cache
+		lastGridConfig.pixelsPerMs = viewport.pixelsPerMs;
+		lastGridConfig.centerTime = viewport.centerTime;
+		lastGridConfig.width = viewport.width;
 
-		// DECADE LABELS - Progressive disclosure based on spacing
-		// Century marks first (1900, 2000), then 50-year marks, then all decades
-		// PERFORMANCE: Skip if spacing too small
-		if (spacings.decade >= 10) {
-			// Minimum spacing for any decade to appear
-			const decadeSpacing = spacings.decade;
-			const startDate = new Date(startTime);
-			let currentDate = new Date(
-				Math.floor(startDate.getFullYear() / 10) * 10,
-				0,
-				1,
-			);
+		const result = calculateTimeGrid({
+			startTime: viewport.startTime,
+			endTime: viewport.endTime,
+			centerTime: viewport.centerTime,
+			pixelsPerMs: viewport.pixelsPerMs,
+			width: viewport.width,
+			isMobile,
+			contextColWidth: CONTEXT_COL_WIDTH,
+		});
 
-			while (currentDate.getTime() < endTime) {
-				const year = currentDate.getFullYear();
-
-				// Progressive disclosure:
-				// - Century marks (1900, 2000) appear at 15px
-				// - 50-year marks (1950, 2050) appear at 35px
-				// - All other decades appear at 60px
-				let requiredSpacing: number;
-				let importance: number;
-
-				if (year % 100 === 0) {
-					requiredSpacing = 15;
-					importance = 1.0;
-				} else if (year % 50 === 0) {
-					requiredSpacing = 35;
-					importance = 0.7;
-				} else {
-					requiredSpacing = 60;
-					importance = 0.4;
-				}
-
-				const fadeStart = requiredSpacing * 0.5;
-				const fadeEnd = requiredSpacing;
-				let decadeOpacity = 0;
-				if (decadeSpacing >= fadeEnd) {
-					decadeOpacity = 1;
-				} else if (decadeSpacing > fadeStart) {
-					decadeOpacity =
-						(decadeSpacing - fadeStart) / (fadeEnd - fadeStart);
-				}
-
-				if (decadeOpacity > 0.01) {
-					const currentTime = currentDate.getTime();
-					const screenX =
-						halfWidth + (currentTime - centerTime) * pixelsPerMs;
-
-					if (
-						screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
-						screenX < width
-					) {
-						const MIN_LABEL_DISTANCE = 15;
-						const tooClose = newGridLines.some(
-							(line) =>
-								Math.abs(line.x - screenX) < MIN_LABEL_DISTANCE,
-						);
-
-						if (!tooClose) {
-							const finalOpacity =
-								decadeOpacity * (0.5 + importance * 0.5);
-
-							newGridLines.push({
-								key: `decade-${currentTime}`,
-								x: screenX,
-								label: year.toString(),
-								isMajor: year % 100 === 0,
-								opacity: finalOpacity,
-								lineHeight: 1,
-								isSubUnit: false,
-								fontWeight: Math.round(400 + importance * 200),
-								fontSize: Math.round(10 + importance * 3),
-								labelOpacity: finalOpacity,
-							});
-						}
-					}
-				}
-
-				currentDate.setFullYear(currentDate.getFullYear() + 10);
-			}
-		}
-
-		// YEAR LABELS - Progressive disclosure based on spacing
-		// Decade years (2020, 2030) first, then ending in 5 (2025), then all
-		// PERFORMANCE: Skip if spacing too small
-		if (spacings.year >= 10) {
-			// Minimum spacing for any year to appear
-			const yearSpacing = spacings.year;
-			const startDate = new Date(startTime);
-			let currentDate = new Date(startDate.getFullYear(), 0, 1);
-
-			while (currentDate.getTime() < endTime) {
-				const year = currentDate.getFullYear();
-
-				// Progressive disclosure:
-				// - Decade years (2020) appear at 15px
-				// - Years ending in 5 (2025) appear at 25px
-				// - All other years appear at 40px
-				let requiredSpacing: number;
-				let importance: number;
-
-				if (year % 10 === 0) {
-					requiredSpacing = 15;
-					importance = 1.0;
-				} else if (year % 5 === 0) {
-					requiredSpacing = 25;
-					importance = 0.7;
-				} else {
-					requiredSpacing = 40;
-					importance = 0.4;
-				}
-
-				const fadeStart = requiredSpacing * 0.5;
-				const fadeEnd = requiredSpacing;
-				let yearOpacity = 0;
-				if (yearSpacing >= fadeEnd) {
-					yearOpacity = 1;
-				} else if (yearSpacing > fadeStart) {
-					yearOpacity =
-						(yearSpacing - fadeStart) / (fadeEnd - fadeStart);
-				}
-
-				if (yearOpacity > 0.01) {
-					const currentTime = currentDate.getTime();
-					const screenX =
-						halfWidth + (currentTime - centerTime) * pixelsPerMs;
-
-					if (
-						screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
-						screenX < width
-					) {
-						const MIN_LABEL_DISTANCE = 15;
-						const tooClose = newGridLines.some(
-							(line) =>
-								Math.abs(line.x - screenX) < MIN_LABEL_DISTANCE,
-						);
-
-						if (!tooClose) {
-							const finalOpacity =
-								yearOpacity * (0.5 + importance * 0.5);
-
-							newGridLines.push({
-								key: `year-${currentTime}`,
-								x: screenX,
-								label: year.toString(),
-								isMajor: true,
-								opacity: finalOpacity,
-								lineHeight: 1,
-								isSubUnit: false,
-								fontWeight: Math.round(400 + importance * 200),
-								fontSize: Math.round(10 + importance * 3),
-								labelOpacity: finalOpacity,
-							});
-						}
-					}
-				}
-
-				currentDate.setFullYear(currentDate.getFullYear() + 1);
-			}
-		}
-
-		// MONTH LABELS - Progressive disclosure based on spacing
-		// January first, then quarterly months, then all
-		// PERFORMANCE: Skip if spacing too small
-		if (spacings.month >= 8) {
-			// Minimum spacing for any month to appear
-			const monthSpacing = spacings.month;
-			const startDate = new Date(startTime);
-			let currentDate = new Date(
-				startDate.getFullYear(),
-				startDate.getMonth(),
-				1,
-			);
-
-			while (currentDate.getTime() < endTime) {
-				const month = currentDate.getMonth();
-
-				// Progressive disclosure:
-				// - January (0) appears at 10px
-				// - Quarterly months (Apr=3, Jul=6, Oct=9) appear at 20px
-				// - All other months appear at 35px
-				let requiredSpacing: number;
-				let importance: number;
-
-				if (month === 0) {
-					requiredSpacing = 10;
-					importance = 1.0;
-				} else if (month % 3 === 0) {
-					requiredSpacing = 20;
-					importance = 0.7;
-				} else {
-					requiredSpacing = 35;
-					importance = 0.4;
-				}
-
-				const fadeStart = requiredSpacing * 0.5;
-				const fadeEnd = requiredSpacing;
-				let monthOpacity = 0;
-				if (monthSpacing >= fadeEnd) {
-					monthOpacity = 1;
-				} else if (monthSpacing > fadeStart) {
-					monthOpacity =
-						(monthSpacing - fadeStart) / (fadeEnd - fadeStart);
-				}
-
-				if (monthOpacity > 0.01) {
-					const currentTime = currentDate.getTime();
-					const screenX =
-						halfWidth + (currentTime - centerTime) * pixelsPerMs;
-
-					if (
-						screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
-						screenX < width
-					) {
-						const MIN_LABEL_DISTANCE = 15;
-						const tooClose = newGridLines.some(
-							(line) =>
-								Math.abs(line.x - screenX) < MIN_LABEL_DISTANCE,
-						);
-
-						if (!tooClose) {
-							const finalOpacity =
-								monthOpacity * (0.5 + importance * 0.5);
-							const label =
-								month === 0
-									? currentDate.getFullYear().toString()
-									: currentDate.toLocaleString("en-US", {
-											month: "short",
-										});
-
-							newGridLines.push({
-								key: `month-${currentTime}`,
-								x: screenX,
-								label: label,
-								isMajor: month === 0,
-								opacity: finalOpacity,
-								lineHeight: 1,
-								isSubUnit: false,
-								fontWeight: Math.round(400 + importance * 200),
-								fontSize: Math.round(10 + importance * 2),
-								labelOpacity: finalOpacity,
-							});
-						}
-					}
-				}
-
-				currentDate.setMonth(currentDate.getMonth() + 1);
-			}
-		}
-
-		// WEEK LABELS
-		if (spacings.week > minSpacing.week * 0.4) {
-			const opacity = calculateOpacity(spacings.week, minSpacing.week);
-			addUnitLines(
-				"week",
-				opacity,
-				(d) => `W${getISOWeek(d)}`,
-				() => 0.5,
-				(d) => {
-					const dow = d.getDay();
-					return new Date(
-						d.getFullYear(),
-						d.getMonth(),
-						d.getDate() - dow,
-					);
-				},
-				(d) => d.setDate(d.getDate() + 7),
-			);
-		}
-
-		// DAY LABELS
-		if (spacings.day > minSpacing.day * 0.4) {
-			const opacity = calculateOpacity(spacings.day, minSpacing.day);
-			addUnitLines(
-				"day",
-				opacity,
-				(d) =>
-					`${d.getDate()} ${d.toLocaleString("en-US", { weekday: "short" })}`,
-				(d) => (d.getDate() === 1 ? 1.0 : 0.5),
-				(d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()),
-				(d) => d.setDate(d.getDate() + 1),
-			);
-		}
-
-		// HOUR LABELS - Progressive disclosure based on spacing
-		// Midnight/noon first, then 6am/6pm, then every 3h, then every hour
-		// PERFORMANCE: Skip entirely if spacing is too small for even midnight to show
-		if (spacings.hour >= 2.5) {
-			// Minimum spacing for any hour to appear
-			const hourSpacing = spacings.hour;
-			const startDate = new Date(startTime);
-			let currentDate = new Date(
-				startDate.getFullYear(),
-				startDate.getMonth(),
-				startDate.getDate(),
-				startDate.getHours(),
-			);
-
-			while (currentDate.getTime() < endTime) {
-				const hour = currentDate.getHours();
-
-				// Progressive disclosure thresholds:
-				// - Midnight (0h) appears when spacing >= 5px
-				// - Noon (12h) appears when spacing >= 8px
-				// - 6am/6pm appears when spacing >= 12px
-				// - 3h/9h/15h/21h appears when spacing >= 18px
-				// - All others appear when spacing >= 25px
-				let requiredSpacing: number;
-				let importance: number;
-
-				if (hour === 0) {
-					requiredSpacing = 5;
-					importance = 1.0;
-				} else if (hour === 12) {
-					requiredSpacing = 8;
-					importance = 0.9;
-				} else if (hour % 6 === 0) {
-					requiredSpacing = 12;
-					importance = 0.7;
-				} else if (hour % 3 === 0) {
-					requiredSpacing = 18;
-					importance = 0.5;
-				} else {
-					requiredSpacing = 25;
-					importance = 0.3;
-				}
-
-				const fadeStart = requiredSpacing * 0.5;
-				const fadeEnd = requiredSpacing;
-				let hourOpacity = 0;
-				if (hourSpacing >= fadeEnd) {
-					hourOpacity = 1;
-				} else if (hourSpacing > fadeStart) {
-					hourOpacity =
-						(hourSpacing - fadeStart) / (fadeEnd - fadeStart);
-				}
-
-				if (hourOpacity > 0.01) {
-					const currentTime = currentDate.getTime();
-					const screenX =
-						halfWidth + (currentTime - centerTime) * pixelsPerMs;
-
-					if (
-						screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
-						screenX < width
-					) {
-						// Proximity check
-						const MIN_LABEL_DISTANCE = 15;
-						const tooClose = newGridLines.some(
-							(line) =>
-								Math.abs(line.x - screenX) < MIN_LABEL_DISTANCE,
-						);
-
-						if (!tooClose) {
-							const finalOpacity =
-								hourOpacity * (0.5 + importance * 0.5);
-							const hierarchyLevel = unitHierarchy["hour"] || 0.3;
-
-							newGridLines.push({
-								key: `hour-${currentTime}`,
-								x: screenX,
-								label: `${hour}h`,
-								isMajor: hour === 0, // Midnight is major
-								opacity: finalOpacity,
-								lineHeight: 1,
-								isSubUnit: hierarchyLevel <= 0.4,
-								fontWeight: Math.round(400 + importance * 200),
-								fontSize: Math.round(10 + importance * 2),
-								labelOpacity: finalOpacity,
-							});
-						}
-					}
-				}
-
-				currentDate.setHours(currentDate.getHours() + 1);
-			}
-		}
-
-		// MINUTE LABELS - Progressive disclosure based on spacing
-		// :30 appears first, then :15/:45, then :10 intervals, then :05, then all
-		// PERFORMANCE: Skip entirely if spacing is too small for even :30 to show
-		if (spacings.minute >= 2.5) {
-			// Minimum spacing for any minute to appear
-			const minuteSpacing = spacings.minute;
-			const startDate = new Date(startTime);
-			let currentDate = new Date(
-				startDate.getFullYear(),
-				startDate.getMonth(),
-				startDate.getDate(),
-				startDate.getHours(),
-				startDate.getMinutes(),
-			);
-
-			while (currentDate.getTime() < endTime) {
-				const minute = currentDate.getMinutes();
-				if (minute !== 0) {
-					// Progressive disclosure thresholds:
-					// - :30 appears when spacing >= 5px
-					// - :15/:45 appears when spacing >= 10px
-					// - :10/:20/:40/:50 appears when spacing >= 15px
-					// - :05/:25/:35/:55 appears when spacing >= 18px
-					// - All others appear when spacing >= 22px
-					let requiredSpacing: number;
-					let importance: number;
-
-					if (minute === 30) {
-						requiredSpacing = 5;
-						importance = 0.9;
-					} else if (minute === 15 || minute === 45) {
-						requiredSpacing = 10;
-						importance = 0.7;
-					} else if (minute % 10 === 0) {
-						requiredSpacing = 15;
-						importance = 0.55;
-					} else if (minute % 5 === 0) {
-						requiredSpacing = 18;
-						importance = 0.45;
-					} else {
-						requiredSpacing = 22;
-						importance = 0.3;
-					}
-
-					// Calculate opacity for this specific minute type
-					const fadeStart = requiredSpacing * 0.5;
-					const fadeEnd = requiredSpacing;
-					let minuteOpacity = 0;
-					if (minuteSpacing >= fadeEnd) {
-						minuteOpacity = 1;
-					} else if (minuteSpacing > fadeStart) {
-						minuteOpacity =
-							(minuteSpacing - fadeStart) / (fadeEnd - fadeStart);
-					}
-
-					if (minuteOpacity > 0.01) {
-						const currentTime = currentDate.getTime();
-						const screenX =
-							halfWidth +
-							(currentTime - centerTime) * pixelsPerMs;
-
-						if (screenX > 0 && screenX < width) {
-							const finalOpacity =
-								minuteOpacity * (0.5 + importance * 0.5);
-
-							newGridLines.push({
-								key: `minute-${currentTime}`,
-								x: screenX,
-								label: `:${minute.toString().padStart(2, "0")}`,
-								isMajor: false,
-								opacity: finalOpacity,
-								lineHeight: 1,
-								isSubUnit: true,
-								fontWeight: Math.round(400 + importance * 150),
-								fontSize: 10,
-								labelOpacity: finalOpacity,
-							});
-						}
-					}
-				}
-				currentDate.setMinutes(currentDate.getMinutes() + 1);
-			}
-		}
-
-		gridLines = newGridLines;
-		debugLastCenterTime = centerTime;
+		gridLines = result.gridLines;
+		contextLabels = result.contextLabels;
 	}
 
 	function getVisibleEvents(): RenderableEvent[] {
 		if (!viewport) return [];
 		const { startTime, endTime, lodLevel } = viewport;
 
-		const filtered = events.filter(
-			(e) =>
-				e.endTime > startTime &&
-				e.startTime < endTime &&
-				e.importance.effective >= getImportanceThreshold(lodLevel),
+		// Memoization: skip recalculation if viewport hasn't changed significantly
+		const rangeChanged =
+			Math.abs(startTime - lastVisibleEventsConfig.startTime) *
+				viewport.pixelsPerMs >
+				1 ||
+			Math.abs(endTime - lastVisibleEventsConfig.endTime) *
+				viewport.pixelsPerMs >
+				1;
+		const lodChanged = lodLevel !== lastVisibleEventsConfig.lodLevel;
+
+		if (!rangeChanged && !lodChanged && cachedVisibleEvents.length > 0) {
+			return cachedVisibleEvents; // Use cached result
+		}
+
+		// Update cache
+		lastVisibleEventsConfig.startTime = startTime;
+		lastVisibleEventsConfig.endTime = endTime;
+		lastVisibleEventsConfig.lodLevel = lodLevel;
+
+		const importanceThreshold = getImportanceThreshold(lodLevel);
+
+		// Use EventStore for O(log n + k) range query instead of O(n) filter
+		const filtered = eventStore.queryRangeWithImportance(
+			startTime,
+			endTime,
+			importanceThreshold,
 		);
 
 		// Sort by importance for rendering order (most important on top)
@@ -920,7 +356,7 @@
 			(a, b) => b.importance.effective - a.importance.effective,
 		);
 
-		return filtered.map((e) => {
+		cachedVisibleEvents = filtered.map((e) => {
 			// Use pre-computed lane order from calendar-based assignment
 			const laneOrder = eventLanes.get(e.id) ?? 0;
 
@@ -950,6 +386,8 @@
 				flags: 0,
 			};
 		});
+
+		return cachedVisibleEvents;
 	}
 
 	// Reactive layout offset - always 0 since context column is now a floating card
@@ -1076,58 +514,23 @@
 
 	<!-- Debug overlay - Stats for Nerds -->
 	{#if viewport}
-		<div class="debug-overlay">
-			<div class="debug-title">Stats for Nerds</div>
-			<div class="debug-section">
-				<div><span class="label">FPS:</span> {debugStats.fps}</div>
-				<div>
-					<span class="label">Objects:</span>
-					{debugStats.objectsDrawn}
-				</div>
-				<div>
-					<span class="label">Grid Lines:</span>
-					{debugStats.gridLinesCount}
-				</div>
-				<div>
-					<span class="label">Draw Calls:</span>
-					{debugStats.drawCalls}
-				</div>
-			</div>
-			<div class="debug-divider"></div>
-			<div class="debug-section">
-				<div><span class="label">LOD:</span> {viewport.lodLevel}</div>
-				<div>
-					<span class="label">Zoom:</span>
-					{viewport.pixelsPerMs.toExponential(2)}
-				</div>
-				<div>
-					<span class="label">Visible:</span>
-					{debugStats.visibleRange}
-				</div>
-			</div>
-			<div class="debug-divider"></div>
-			<div class="debug-section">
-				<div>
-					<span class="label">Center:</span>
-					{debugStats.centerTime}
-				</div>
-				{#if debugStats.memoryUsage}
-					<div>
-						<span class="label">Memory:</span>
-						{debugStats.memoryUsage}
-					</div>
-				{/if}
-			</div>
-		</div>
+		<DebugOverlay
+			fps={debugStats.fps}
+			objectsDrawn={debugStats.objectsDrawn}
+			gridLinesCount={debugStats.gridLinesCount}
+			drawCalls={debugStats.drawCalls}
+			lodLevel={viewport.lodLevel}
+			pixelsPerMs={viewport.pixelsPerMs}
+			visibleRange={debugStats.visibleRange}
+			centerTime={debugStats.centerTime}
+			memoryUsage={debugStats.memoryUsage}
+			{isMobile}
+		/>
 	{/if}
 
 	<!-- Toast notification for view changes -->
 	{#key toastKey}
-		{#if toastVisible}
-			<div class="toast" class:visible={toastVisible}>
-				{toastMessage}
-			</div>
-		{/if}
+		<Toast message={toastMessage} visible={toastVisible} />
 	{/key}
 
 	<!-- Keyboard shortcuts help (desktop only) -->
@@ -1310,54 +713,6 @@
 		color: #888;
 	}
 
-	.debug-overlay {
-		position: absolute;
-		top: 40px;
-		right: 10px;
-		background: rgba(0, 0, 0, 0.85);
-		color: white;
-		padding: 12px 16px;
-		border-radius: 8px;
-		font-family: "SF Mono", "Monaco", "Inconsolata", "Fira Code", monospace;
-		font-size: 11px;
-		pointer-events: none;
-		z-index: 20;
-		min-width: 180px;
-		backdrop-filter: blur(4px);
-	}
-
-	.debug-overlay .debug-title {
-		font-size: 10px;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: #888;
-		margin-bottom: 8px;
-		padding-bottom: 6px;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-	}
-
-	.debug-overlay .debug-section {
-		margin: 4px 0;
-	}
-
-	.debug-overlay .debug-section div {
-		margin: 3px 0;
-		display: flex;
-		justify-content: space-between;
-	}
-
-	.debug-overlay .label {
-		color: #aaa;
-		margin-right: 12px;
-	}
-
-	.debug-overlay .debug-divider {
-		height: 1px;
-		background: rgba(255, 255, 255, 0.1);
-		margin: 8px 0;
-	}
-
 	/* Center date indicator line */
 	.center-line {
 		position: absolute;
@@ -1440,44 +795,6 @@
 		text-align: center;
 	}
 
-	/* Toast notification */
-	.toast {
-		position: absolute;
-		bottom: 80px;
-		left: 50%;
-		transform: translateX(-50%);
-		background: rgba(0, 0, 0, 0.85);
-		color: white;
-		padding: 12px 24px;
-		border-radius: 8px;
-		font-size: 16px;
-		font-weight: 600;
-		pointer-events: none;
-		z-index: 100;
-		opacity: 0;
-		backdrop-filter: blur(8px);
-	}
-
-	.toast.visible {
-		opacity: 1;
-		animation: toast-fade 1.5s ease forwards;
-	}
-
-	@keyframes toast-fade {
-		0% {
-			opacity: 1;
-			transform: translateX(-50%) translateY(0);
-		}
-		70% {
-			opacity: 1;
-			transform: translateX(-50%) translateY(0);
-		}
-		100% {
-			opacity: 0;
-			transform: translateX(-50%) translateY(-10px);
-		}
-	}
-
 	/* Mobile gestures help */
 	.mobile-help {
 		position: absolute;
@@ -1527,22 +844,6 @@
 
 		.context-month {
 			font-size: 14px;
-		}
-
-		/* Reposition Stats for Nerds to bottom-right, less intrusive */
-		.debug-overlay {
-			font-size: 9px;
-			padding: 8px 10px;
-			min-width: 140px;
-			top: auto;
-			bottom: 130px; /* Increased from 80px to clear the usage help */
-			right: 16px;
-			background: rgba(0, 0, 0, 0.8); /* Slightly more transparent */
-			backdrop-filter: blur(8px);
-		}
-
-		.debug-overlay .debug-title {
-			font-size: 8px;
 		}
 
 		/* Ensure usage help is visible */
