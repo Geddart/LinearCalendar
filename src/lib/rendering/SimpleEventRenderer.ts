@@ -104,8 +104,10 @@ export class SimpleEventRenderer {
      * Render all events.
      * ALL coordinate math done here on CPU with 64-bit precision.
      * 
-     * WIDTH: Exactly matches the event's time span in pixels
-     * HEIGHT: Fixed at EVENT_HEIGHT when shown as bar, DOT_SIZE when zoomed out
+     * RENDERING MODES:
+     * - Bar mode: When event width >= 1px, render as full-height bars filling the lane
+     * - Line mode: When event width < 1px, render as thin vertical lines
+     *   This creates a "density" visualization when zoomed out
      * 
      * DPI SCALING: All dimensions are scaled by devicePixelRatio for crisp rendering
      * on Retina/high-DPI displays.
@@ -122,29 +124,50 @@ export class SimpleEventRenderer {
         const canvasHeight = this.ctx.canvas.height;
         gl.uniform2f(this.uniforms.viewportSize, canvasWidth, canvasHeight);
 
-        // Event rendering constants (scaled by DPR for crisp rendering)
-        const EVENT_HEIGHT = 24 * dpr; // Fixed height for bar events
-        const DOT_SIZE = 6 * dpr;      // Minimum size when very zoomed out
+        // Lane layout constants (must match Calendar.svelte)
+        const NUM_LANES = 4;
+        const LANE_AREA_TOP = 0.10;
+        const LANE_AREA_BOTTOM = 0.98;
+        const LANE_GAP = 0.01;
+        const TOTAL_LANE_AREA = LANE_AREA_BOTTOM - LANE_AREA_TOP - (LANE_GAP * (NUM_LANES - 1));
+        const LANE_HEIGHT_RATIO = TOTAL_LANE_AREA / NUM_LANES;
 
+        // Event fills from separator to separator (lane height + gap to touch next line)
+        const LANE_HEIGHT_PX = LANE_HEIGHT_RATIO * canvasHeight;
+        const GAP_PX = LANE_GAP * canvasHeight;
+        // For all lanes except the last one, events span lane + gap to reach the next separator
+        // This makes events touch both the separator above and below
+        const EVENT_HEIGHT = LANE_HEIGHT_PX + GAP_PX;  // Span from line to line
+        const MIN_LINE_WIDTH = 1 * dpr;  // Minimum width for line mode
         for (const event of events) {
             // === X POSITION (64-bit precision, scaled by DPR) ===
             const startPx = (event.startTime - viewport.centerTime) * viewport.pixelsPerMs * dpr;
             const endPx = (event.endTime - viewport.centerTime) * viewport.pixelsPerMs * dpr;
             const centerX = (startPx + endPx) / 2;
 
-            // Width is EXACTLY the time span in pixels, with a minimum size
+            // Width is EXACTLY the time span in pixels
             const timeSpanWidth = endPx - startPx;
-            const eventWidth = Math.max(timeSpanWidth, DOT_SIZE);
+
+            // Determine if we're in line mode (event width < 1px)
+            const isLineMode = timeSpanWidth < 1 * dpr;
 
             // === Y POSITION (stable, from 0-1 lane position, scaled by DPR) ===
             const centerY = (event.y - 0.5) * canvasHeight;
 
-            // === HEIGHT ===
-            // Height morphs smoothly between DOT_SIZE and EVENT_HEIGHT
-            // based on morphFactor, but stays at EVENT_HEIGHT once reached
-            const height = DOT_SIZE + (EVENT_HEIGHT - DOT_SIZE) * viewport.morphFactor;
+            let eventWidth: number;
+            let height: number;
 
-            // Set uniforms (all in actual pixels, relative to screen center)
+            if (isLineMode) {
+                // LINE MODE: Thin vertical line representing the event
+                // Width is fixed at minimum line width
+                eventWidth = MIN_LINE_WIDTH;
+            } else {
+                // BAR MODE: Full bar representation filling the lane
+                eventWidth = timeSpanWidth;
+            }
+
+            // Height is ALWAYS the full lane height - never changes with zoom
+            height = EVENT_HEIGHT;
             gl.uniform2f(this.uniforms.pos, centerX, centerY);
             gl.uniform2f(this.uniforms.size, eventWidth, height);
             gl.uniform4f(this.uniforms.color, event.colorR, event.colorG, event.colorB, event.colorA);

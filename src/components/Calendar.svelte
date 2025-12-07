@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from "svelte";
 	import { WebGLContext } from "$lib/rendering/WebGLContext";
-	import { SimpleEventRenderer } from "$lib/rendering/SimpleEventRenderer";
+	import { InstancedEventRenderer } from "$lib/rendering/InstancedEventRenderer";
 	import { viewportController } from "$lib/viewport/ViewportController";
 	import { InputHandler } from "$lib/viewport/InputHandler";
 	import {
@@ -15,10 +15,13 @@
 		CalendarEvent,
 		RenderableEvent,
 	} from "$lib/types/Event";
+	import { DEFAULT_LANES } from "$lib/types/Event";
+	import EventDetailPanel from "./EventDetailPanel.svelte";
+	import { hitTest, selectEvent } from "$lib/events/EventInteraction";
 
 	let canvas: HTMLCanvasElement;
 	let ctx: WebGLContext;
-	let renderer: SimpleEventRenderer;
+	let renderer: InstancedEventRenderer;
 	let inputHandler: InputHandler;
 	let frameId: number;
 
@@ -84,9 +87,17 @@
 
 	// Layout constants
 	const CONTEXT_COL_WIDTH = 130;
-	const NUM_LANES = 8;
-	const LANE_BASE_Y = 0.85;
-	const LANE_SPACING = 0.08;
+
+	// Lane layout - events organized by calendar (from DEFAULT_LANES)
+	// Lanes are compact with small gaps between them
+	const LANE_AREA_TOP = 0.1; // Leave space for grid labels at top
+	const LANE_AREA_BOTTOM = 0.98; // Use more vertical space
+	const LANE_GAP = 0.01; // Small gap between lanes for visual separation
+	const TOTAL_LANE_AREA =
+		LANE_AREA_BOTTOM -
+		LANE_AREA_TOP -
+		LANE_GAP * (DEFAULT_LANES.length - 1);
+	const LANE_HEIGHT = TOTAL_LANE_AREA / DEFAULT_LANES.length;
 
 	onMount(() => {
 		unsubscribe = viewportController.subscribe((state) => {
@@ -94,7 +105,7 @@
 		});
 
 		ctx = new WebGLContext(canvas);
-		renderer = new SimpleEventRenderer(ctx);
+		renderer = new InstancedEventRenderer(ctx);
 
 		viewportController.setCanvas(canvas);
 		ctx.resize();
@@ -157,36 +168,17 @@
 
 	/**
 	 * Compute lane assignments for all events ONCE at startup.
-	 * Uses a greedy algorithm: assign each event to the first lane
-	 * where it doesn't overlap with existing events.
-	 *
-	 * This is the key fix for jumping - lanes are stable regardless
-	 * of what's visible in the viewport.
+	 * Now uses calendar-based lanes instead of greedy algorithm.
+	 * Events are assigned to lanes based on their calendarLaneId.
 	 */
 	function computeLaneAssignments() {
-		// Sort events by start time
-		const sorted = [...events].sort((a, b) => a.startTime - b.startTime);
-
-		// Track when each lane becomes free
-		const laneEndTimes: number[] = new Array(NUM_LANES).fill(0);
-
-		for (const event of sorted) {
-			// Find first available lane
-			let assignedLane = 0;
-			for (let lane = 0; lane < NUM_LANES; lane++) {
-				if (event.startTime >= laneEndTimes[lane]) {
-					assignedLane = lane;
-					break;
-				}
-				// If no lane fits, use modulo of least-full lane
-				if (lane === NUM_LANES - 1) {
-					assignedLane = lane % NUM_LANES;
-				}
-			}
-
-			// Assign and mark lane as occupied
-			eventLanes.set(event.id, assignedLane);
-			laneEndTimes[assignedLane] = event.endTime;
+		for (const event of events) {
+			// Find the lane for this event based on its calendarLaneId
+			const lane = DEFAULT_LANES.find(
+				(l) => l.id === event.calendarLaneId,
+			);
+			const laneOrder = lane ? lane.order : 0; // Default to first lane if not found
+			eventLanes.set(event.id, laneOrder);
 		}
 	}
 
@@ -247,7 +239,8 @@
 		// Update lightweight debug stats (these are cheap, can run every frame)
 		debugStats.objectsDrawn = visibleEvents.length;
 		debugStats.gridLinesCount = gridLines.length;
-		debugStats.drawCalls = visibleEvents.length + 1; // +1 for clear
+		// With instanced rendering: 1 draw call for all events + grid lines drawn via HTML
+		debugStats.drawCalls = visibleEvents.length > 0 ? 1 : 0;
 	}
 
 	/**
@@ -928,16 +921,27 @@
 		);
 
 		return filtered.map((e) => {
-			const rgb = hexToRgb(e.color);
-			// Use pre-computed lane - THIS IS THE KEY FIX
-			const lane = eventLanes.get(e.id) ?? 0;
+			// Use pre-computed lane order from calendar-based assignment
+			const laneOrder = eventLanes.get(e.id) ?? 0;
+
+			// Get the lane definition to use its color
+			const lane = DEFAULT_LANES[laneOrder] || DEFAULT_LANES[0];
+			const rgb = hexToRgb(lane.color);
+
+			// Calculate Y position based on lane layout (with gaps)
+			// Lanes are positioned from top to bottom based on DEFAULT_LANES order
+			// Center is at middle of (LANE_HEIGHT + LANE_GAP) span so events fill separator to separator
+			const laneY =
+				LANE_AREA_TOP +
+				laneOrder * (LANE_HEIGHT + LANE_GAP) +
+				(LANE_HEIGHT + LANE_GAP) / 2;
 
 			return {
 				id: parseInt(e.id.replace(/\D/g, "")) || 0,
 				startTime: e.startTime,
 				endTime: e.endTime,
-				// Stable Y position from pre-computed lane
-				y: LANE_BASE_Y - lane * LANE_SPACING,
+				// Y position for WebGL (0 = bottom, 1 = top) - invert from screen coords
+				y: 1 - laneY,
 				colorR: rgb.r,
 				colorG: rgb.g,
 				colorB: rgb.b,
@@ -954,10 +958,60 @@
 	function getImportanceThreshold(lodLevel: number): number {
 		return Math.pow(lodLevel / 10, 2);
 	}
+
+	/**
+	 * Track mouse position for distinguishing clicks from drags
+	 */
+	let mouseDownPos: { x: number; y: number } | null = null;
+	const DRAG_THRESHOLD = 5; // pixels - movement beyond this is considered a drag
+
+	function handleCanvasMouseDown(e: MouseEvent) {
+		mouseDownPos = { x: e.clientX, y: e.clientY };
+	}
+
+	function handleCanvasMouseUp(e: MouseEvent) {
+		if (!mouseDownPos) return;
+
+		// Check if this was a drag (moved more than threshold)
+		const dx = e.clientX - mouseDownPos.x;
+		const dy = e.clientY - mouseDownPos.y;
+		const distance = Math.sqrt(dx * dx + dy * dy);
+
+		if (distance > DRAG_THRESHOLD) {
+			// This was a drag, not a click - don't open panel
+			mouseDownPos = null;
+			return;
+		}
+
+		mouseDownPos = null;
+
+		// This was a click - perform hit test
+		if (!viewport || !canvas) return;
+
+		const rect = canvas.getBoundingClientRect();
+		const x = e.clientX - rect.left;
+		const y = e.clientY - rect.top;
+
+		const event = hitTest(
+			x,
+			y,
+			viewport,
+			events,
+			eventLanes,
+			canvas.clientWidth,
+			canvas.clientHeight,
+		);
+
+		selectEvent(event);
+	}
 </script>
 
 <div class="calendar-container">
-	<canvas bind:this={canvas}></canvas>
+	<canvas
+		bind:this={canvas}
+		on:mousedown={handleCanvasMouseDown}
+		on:mouseup={handleCanvasMouseUp}
+	></canvas>
 
 	<!-- Grid lines (HTML overlay) with smooth LOD transitions -->
 	<div class="grid-overlay" style="left: {contextOffset}px;">
@@ -980,6 +1034,24 @@
 						>{line.label}</span
 					>
 				{/if}
+			</div>
+		{/each}
+	</div>
+
+	<!-- Lane separators with labels -->
+	<div
+		class="lane-overlay"
+		style="left: {isMobile ? 0 : CONTEXT_COL_WIDTH}px;"
+	>
+		{#each DEFAULT_LANES as lane, i}
+			<div
+				class="lane-separator"
+				style="top: {(LANE_AREA_TOP + i * (LANE_HEIGHT + LANE_GAP)) *
+					100}%"
+			>
+				<span class="lane-label" style="color: {lane.color}"
+					>{lane.name}</span
+				>
 			</div>
 		{/each}
 	</div>
@@ -1094,6 +1166,9 @@
 			</div>
 		</div>
 	{/if}
+
+	<!-- Event detail panel (slide-out) -->
+	<EventDetailPanel />
 </div>
 
 <style>
@@ -1117,6 +1192,41 @@
 		bottom: 0;
 		pointer-events: none;
 		overflow: hidden;
+	}
+
+	/* Lane overlay for calendar lanes */
+	.lane-overlay {
+		position: absolute;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		pointer-events: none;
+		overflow: hidden;
+	}
+
+	.lane-separator {
+		position: absolute;
+		left: 0;
+		right: 0;
+		height: 1px;
+		background: rgba(0, 0, 0, 0.08);
+	}
+
+	.lane-label {
+		position: absolute;
+		top: 4px;
+		left: 8px;
+		font-size: 11px;
+		font-weight: 600;
+		font-family:
+			"Inter",
+			-apple-system,
+			BlinkMacSystemFont,
+			"Segoe UI",
+			sans-serif;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		opacity: 0.6;
 	}
 
 	.grid-line {

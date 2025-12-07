@@ -1,9 +1,42 @@
 /**
+ * CalendarLane represents a horizontal lane for organizing events.
+ * 
+ * Lanes correspond to different calendars or event categories.
+ * Designed to support future calendar imports with many lanes.
+ */
+export interface CalendarLane {
+    /** Unique identifier (e.g., 'todo', 'health') */
+    id: string;
+    /** Display name shown in the lane label */
+    name: string;
+    /** Lane color (hex) - used for lane separator and density visualization */
+    color: string;
+    /** Lane order (0 = topmost) */
+    order: number;
+    /** Whether lane is currently collapsed (hidden) */
+    collapsed?: boolean;
+}
+
+/**
+ * Default calendar lanes.
+ * These match the initial UI design and can be extended for calendar imports.
+ */
+export const DEFAULT_LANES: CalendarLane[] = [
+    { id: 'todo', name: 'Todo', color: '#E3B8D4', order: 0 },
+    { id: 'health', name: 'Health', color: '#D4E3B8', order: 1 },
+    { id: 'people', name: 'People', color: '#D4B8E3', order: 2 },
+    { id: 'work', name: 'Work', color: '#B8D4E3', order: 3 },
+];
+
+/**
  * CalendarEvent represents a single event from any calendar source.
  *
  * IMPORTANT: All times are in milliseconds since Unix epoch.
  * Use Date.getTime() to convert JavaScript Dates.
+ * 
+ * This interface supports Google Calendar, Apple Calendar, and manual events.
  */
+
 export interface CalendarEvent {
     /** Unique identifier */
     id: string;
@@ -17,7 +50,7 @@ export interface CalendarEvent {
     /** Display title */
     title: string;
 
-    /** Optional description */
+    /** Optional description/notes */
     description?: string;
 
     /** Hex color code (e.g., "#B8D4E3") */
@@ -43,6 +76,69 @@ export interface CalendarEvent {
 
     /** Source calendar */
     source: 'mock' | 'google' | 'apple' | 'manual';
+
+    /** Calendar lane ID this event belongs to */
+    calendarLaneId?: string;
+
+    // --- Location/Place Data ---
+
+    /** Event location */
+    location?: {
+        /** Place name (e.g., "Coffee Shop") */
+        name?: string;
+        /** Full address */
+        address?: string;
+        /** GPS coordinates for map integration */
+        coordinates?: {
+            lat: number;
+            lng: number;
+        };
+    };
+
+    // --- Attendees ---
+
+    /** List of event attendees */
+    attendees?: {
+        name: string;
+        email?: string;
+        status?: 'accepted' | 'declined' | 'tentative' | 'pending';
+        isOrganizer?: boolean;
+    }[];
+
+    // --- Recurrence ---
+
+    /** iCal RRULE format for recurring events */
+    recurrenceRule?: string;
+    /** Parent event ID for recurring event instances */
+    recurringEventId?: string;
+
+    // --- Reminders ---
+
+    /** Event reminders */
+    reminders?: {
+        method: 'email' | 'popup' | 'sms';
+        minutesBefore: number;
+    }[];
+
+    // --- Links/URLs ---
+
+    /** Video conference URL (Zoom, Meet, etc.) */
+    conferenceUrl?: string;
+    /** Link to event in original calendar app */
+    htmlLink?: string;
+
+    // --- Metadata ---
+
+    /** When event was created (ms since epoch) */
+    createdAt?: number;
+    /** When event was last updated (ms since epoch) */
+    updatedAt?: number;
+    /** Organizer email */
+    organizer?: string;
+    /** Whether this is an all-day event */
+    allDay?: boolean;
+    /** Event status */
+    status?: 'confirmed' | 'tentative' | 'cancelled';
 }
 
 /**

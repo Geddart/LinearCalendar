@@ -15,6 +15,19 @@ const COLORS = {
 };
 
 /**
+ * Map event categories to calendar lane IDs.
+ * Used for assigning events to their display lanes.
+ */
+const CATEGORY_TO_LANE: Record<string, string> = {
+    work: 'work',
+    personal: 'todo',
+    health: 'health',
+    travel: 'todo',
+    social: 'people',
+    other: 'todo'
+};
+
+/**
  * Generate mock calendar events for testing.
  *
  * @param count - Number of events to generate
@@ -37,20 +50,32 @@ export function generateTodayEvents(): CalendarEvent[] {
             startTime: todayTime - DAY + 9 * HOUR,
             endTime: todayTime - DAY + 10 * HOUR,
             title: 'Morning coffee',
+            description: 'Catch up with Sarah about the project',
             color: COLORS.social,
             importance: { duration: 0.3, aiScore: 0.5, manual: 0.5, effective: 0.5 },
             isLifeEvent: false,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'people',
+            location: { name: 'Blue Bottle Coffee', address: '123 Main St' },
+            attendees: [{ name: 'Sarah', email: 'sarah@example.com', status: 'accepted' }]
         },
         {
             id: 'today-2',
             startTime: todayTime - DAY + 14 * HOUR,
             endTime: todayTime - DAY + 15 * HOUR,
             title: 'Team standup',
+            description: 'Daily sync with engineering team',
             color: COLORS.work,
             importance: { duration: 0.3, aiScore: 0.5, manual: 0.5, effective: 0.5 },
             isLifeEvent: false,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'work',
+            conferenceUrl: 'https://meet.google.com/abc-defg-hij',
+            attendees: [
+                { name: 'Alex', status: 'accepted', isOrganizer: true },
+                { name: 'Jordan', status: 'accepted' },
+                { name: 'Casey', status: 'tentative' }
+            ]
         },
         // Today
         {
@@ -61,7 +86,8 @@ export function generateTodayEvents(): CalendarEvent[] {
             color: COLORS.health,
             importance: { duration: 0.3, aiScore: 0.6, manual: 0.5, effective: 0.55 },
             isLifeEvent: false,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'health'
         },
         {
             id: 'today-4',
@@ -71,7 +97,8 @@ export function generateTodayEvents(): CalendarEvent[] {
             color: COLORS.work,
             importance: { duration: 0.4, aiScore: 0.7, manual: 0.6, effective: 0.6 },
             isLifeEvent: false,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'work'
         },
         {
             id: 'today-5',
@@ -81,7 +108,8 @@ export function generateTodayEvents(): CalendarEvent[] {
             color: COLORS.social,
             importance: { duration: 0.3, aiScore: 0.5, manual: 0.5, effective: 0.5 },
             isLifeEvent: false,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'people'
         },
         {
             id: 'today-6',
@@ -91,7 +119,8 @@ export function generateTodayEvents(): CalendarEvent[] {
             color: COLORS.work,
             importance: { duration: 0.3, aiScore: 0.5, manual: 0.5, effective: 0.5 },
             isLifeEvent: false,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'work'
         },
         {
             id: 'today-7',
@@ -101,7 +130,8 @@ export function generateTodayEvents(): CalendarEvent[] {
             color: COLORS.social,
             importance: { duration: 0.4, aiScore: 0.6, manual: 0.6, effective: 0.55 },
             isLifeEvent: false,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'people'
         },
         // Tomorrow
         {
@@ -112,7 +142,8 @@ export function generateTodayEvents(): CalendarEvent[] {
             color: COLORS.health,
             importance: { duration: 0.35, aiScore: 0.7, manual: 0.6, effective: 0.6 },
             isLifeEvent: false,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'health'
         },
         {
             id: 'today-9',
@@ -122,7 +153,8 @@ export function generateTodayEvents(): CalendarEvent[] {
             color: COLORS.work,
             importance: { duration: 0.4, aiScore: 0.8, manual: 0.7, effective: 0.7 },
             isLifeEvent: false,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'work'
         },
         // Next week
         {
@@ -133,7 +165,8 @@ export function generateTodayEvents(): CalendarEvent[] {
             color: COLORS.personal,
             importance: { duration: 0.3, aiScore: 0.5, manual: 0.5, effective: 0.5 },
             isLifeEvent: false,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'todo'
         },
         {
             id: 'today-11',
@@ -143,7 +176,8 @@ export function generateTodayEvents(): CalendarEvent[] {
             color: COLORS.travel,
             importance: { duration: 0.6, aiScore: 0.8, manual: 0.8, effective: 0.75 },
             isLifeEvent: false,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'todo'
         },
         // Last week
         {
@@ -154,7 +188,8 @@ export function generateTodayEvents(): CalendarEvent[] {
             color: COLORS.work,
             importance: { duration: 0.3, aiScore: 0.5, manual: 0.5, effective: 0.5 },
             isLifeEvent: false,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'work'
         },
         {
             id: 'today-13',
@@ -164,7 +199,8 @@ export function generateTodayEvents(): CalendarEvent[] {
             color: COLORS.social,
             importance: { duration: 0.4, aiScore: 0.5, manual: 0.5, effective: 0.5 },
             isLifeEvent: false,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'people'
         }
     ];
 }
@@ -242,7 +278,8 @@ export function generateMockEvents(
                 effective: isLifeEvent ? 1 : durationImportance * 0.5 + 0.25
             },
             isLifeEvent,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: CATEGORY_TO_LANE[category] || 'todo'
         });
     }
 
@@ -265,7 +302,8 @@ export function generateLifeEvents(): CalendarEvent[] {
             color: '#E3B8D4',
             importance: { duration: 0, aiScore: 1, manual: 1, effective: 1 },
             isLifeEvent: true,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'todo'
         },
         {
             id: 'life-2',
@@ -275,7 +313,8 @@ export function generateLifeEvents(): CalendarEvent[] {
             color: '#D4E3B8',
             importance: { duration: 1, aiScore: 0.9, manual: 1, effective: 1 },
             isLifeEvent: true,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'todo'
         },
         {
             id: 'life-3',
@@ -285,7 +324,8 @@ export function generateLifeEvents(): CalendarEvent[] {
             color: '#B8D4E3',
             importance: { duration: 1, aiScore: 0.9, manual: 1, effective: 1 },
             isLifeEvent: true,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'work'
         },
         {
             id: 'life-4',
@@ -295,7 +335,8 @@ export function generateLifeEvents(): CalendarEvent[] {
             color: '#E3D4B8',
             importance: { duration: 0, aiScore: 1, manual: 1, effective: 1 },
             isLifeEvent: true,
-            source: 'mock'
+            source: 'mock',
+            calendarLaneId: 'todo'
         }
     ];
 }
