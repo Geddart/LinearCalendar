@@ -7,6 +7,7 @@
 	import {
 		generateMockEvents,
 		generateLifeEvents,
+		generateTodayEvents,
 	} from "$lib/api/MockDataProvider";
 	import { hexToRgb } from "$lib/utils/colorUtils";
 	import type {
@@ -109,7 +110,11 @@
 			) || window.matchMedia("(max-width: 768px)").matches;
 
 		// Generate events
-		events = [...generateLifeEvents(), ...generateMockEvents(100)];
+		events = [
+			...generateLifeEvents(),
+			...generateMockEvents(100),
+			...generateTodayEvents(),
+		];
 
 		// Pre-compute lane assignments ONCE - this prevents jumping
 		computeLaneAssignments();
@@ -483,8 +488,35 @@
 							isMajor = currentDate.getMonth() === 0; // January
 							break;
 						case "week":
-							// Week labels only (W1, W2...), month boundaries handled separately
-							label = `W${Math.ceil(currentDate.getDate() / 7)}`;
+							// Week labels - ISO week number (W1-W52/53 for the year)
+							const getISOWeek = (d: Date): number => {
+								const date = new Date(d.getTime());
+								date.setHours(0, 0, 0, 0);
+								// Thursday in current week decides the year
+								date.setDate(
+									date.getDate() +
+										3 -
+										((date.getDay() + 6) % 7),
+								);
+								// January 4 is always in week 1
+								const week1 = new Date(
+									date.getFullYear(),
+									0,
+									4,
+								);
+								// Adjust to Thursday in week 1 and count number of weeks from date to week1
+								return (
+									1 +
+									Math.round(
+										((date.getTime() - week1.getTime()) /
+											86400000 -
+											3 +
+											((week1.getDay() + 6) % 7)) /
+											7,
+									)
+								);
+							};
+							label = `W${getISOWeek(currentDate)}`;
 							break;
 						case "day":
 							// Day with weekday: "9 Mon"
@@ -495,8 +527,16 @@
 							label = `${currentDate.getDate()} ${weekdayShort}`;
 							break;
 						case "hour":
-							// Hour labels only
-							label = `${currentDate.getHours()}h`;
+							// Hour labels - only show if spacing is sufficient
+							// This prevents the overlapping text mess when zoomed out
+							const pixelSpacingPerHour = HOUR_MS * pixelsPerMs;
+							const HOUR_LABEL_MIN_SPACING = 45; // px - below this, no labels
+							const HOUR_LABEL_FULL_SPACING = 70; // px - above this, full opacity
+							if (pixelSpacingPerHour >= HOUR_LABEL_MIN_SPACING) {
+								label = `${currentDate.getHours()}h`;
+							} else {
+								label = ""; // Hide label when too crowded
+							}
 							break;
 					}
 
@@ -558,11 +598,28 @@
 					// Font size: 11px to 13px based on importance
 					const fontSize = 11 + importance * 2;
 
+					// Calculate opacity - for hours, use spacing-based progressive opacity
+					let lineOpacity = 1;
+					if (currentLOD.unit === "hour") {
+						const hourSpacing = HOUR_MS * pixelsPerMs;
+						const MIN_SPACING = 45;
+						const FULL_SPACING = 70;
+						// Fade in from MIN to FULL spacing
+						lineOpacity = Math.min(
+							1,
+							Math.max(
+								0,
+								(hourSpacing - MIN_SPACING) /
+									(FULL_SPACING - MIN_SPACING),
+							),
+						);
+					}
+
 					newGridLines.push({
 						x: screenX,
 						label,
 						isMajor: importance > 0.7, // Keep for color styling
-						opacity: 1,
+						opacity: lineOpacity,
 						lineHeight: 1,
 						isSubUnit: false,
 						fontWeight: finalWeight,

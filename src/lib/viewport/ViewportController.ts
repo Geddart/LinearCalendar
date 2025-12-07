@@ -8,8 +8,8 @@ import type { ViewportState } from '$lib/types/Event';
  * from century view to minute view).
  */
 const ZOOM = {
-    /** Pixels per ms when fully zoomed OUT (millennium view - max zoom out) */
-    MIN_PIXELS_PER_MS: 1e-13,
+    /** Pixels per ms when fully zoomed OUT (~31,691 years visible) */
+    MIN_PIXELS_PER_MS: 1.80e-12,
 
     /** Pixels per ms when fully zoomed IN (~2 minutes visible) */
     MAX_PIXELS_PER_MS: 0.01,

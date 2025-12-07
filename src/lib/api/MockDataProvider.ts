@@ -20,9 +20,158 @@ const COLORS = {
  * @param count - Number of events to generate
  * @param yearRange - Range of years to spread events across
  */
+/**
+ * Generate events specifically around today's date for immediate visibility.
+ */
+export function generateTodayEvents(): CalendarEvent[] {
+    const HOUR = 3600000;
+    const DAY = 24 * HOUR;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayTime = today.getTime();
+
+    return [
+        // Yesterday
+        {
+            id: 'today-1',
+            startTime: todayTime - DAY + 9 * HOUR,
+            endTime: todayTime - DAY + 10 * HOUR,
+            title: 'Morning coffee',
+            color: COLORS.social,
+            importance: { duration: 0.3, aiScore: 0.5, manual: 0.5, effective: 0.5 },
+            isLifeEvent: false,
+            source: 'mock'
+        },
+        {
+            id: 'today-2',
+            startTime: todayTime - DAY + 14 * HOUR,
+            endTime: todayTime - DAY + 15 * HOUR,
+            title: 'Team standup',
+            color: COLORS.work,
+            importance: { duration: 0.3, aiScore: 0.5, manual: 0.5, effective: 0.5 },
+            isLifeEvent: false,
+            source: 'mock'
+        },
+        // Today
+        {
+            id: 'today-3',
+            startTime: todayTime + 8 * HOUR,
+            endTime: todayTime + 9 * HOUR,
+            title: 'Morning workout',
+            color: COLORS.health,
+            importance: { duration: 0.3, aiScore: 0.6, manual: 0.5, effective: 0.55 },
+            isLifeEvent: false,
+            source: 'mock'
+        },
+        {
+            id: 'today-4',
+            startTime: todayTime + 10 * HOUR,
+            endTime: todayTime + 12 * HOUR,
+            title: 'Project planning',
+            color: COLORS.work,
+            importance: { duration: 0.4, aiScore: 0.7, manual: 0.6, effective: 0.6 },
+            isLifeEvent: false,
+            source: 'mock'
+        },
+        {
+            id: 'today-5',
+            startTime: todayTime + 13 * HOUR,
+            endTime: todayTime + 14 * HOUR,
+            title: 'Lunch with Alex',
+            color: COLORS.social,
+            importance: { duration: 0.3, aiScore: 0.5, manual: 0.5, effective: 0.5 },
+            isLifeEvent: false,
+            source: 'mock'
+        },
+        {
+            id: 'today-6',
+            startTime: todayTime + 15 * HOUR,
+            endTime: todayTime + 16 * HOUR,
+            title: 'Code review',
+            color: COLORS.work,
+            importance: { duration: 0.3, aiScore: 0.5, manual: 0.5, effective: 0.5 },
+            isLifeEvent: false,
+            source: 'mock'
+        },
+        {
+            id: 'today-7',
+            startTime: todayTime + 18 * HOUR,
+            endTime: todayTime + 20 * HOUR,
+            title: 'Dinner party',
+            color: COLORS.social,
+            importance: { duration: 0.4, aiScore: 0.6, manual: 0.6, effective: 0.55 },
+            isLifeEvent: false,
+            source: 'mock'
+        },
+        // Tomorrow
+        {
+            id: 'today-8',
+            startTime: todayTime + DAY + 9 * HOUR,
+            endTime: todayTime + DAY + 10.5 * HOUR,
+            title: 'Doctor appointment',
+            color: COLORS.health,
+            importance: { duration: 0.35, aiScore: 0.7, manual: 0.6, effective: 0.6 },
+            isLifeEvent: false,
+            source: 'mock'
+        },
+        {
+            id: 'today-9',
+            startTime: todayTime + DAY + 14 * HOUR,
+            endTime: todayTime + DAY + 16 * HOUR,
+            title: 'Client presentation',
+            color: COLORS.work,
+            importance: { duration: 0.4, aiScore: 0.8, manual: 0.7, effective: 0.7 },
+            isLifeEvent: false,
+            source: 'mock'
+        },
+        // Next week
+        {
+            id: 'today-10',
+            startTime: todayTime + 3 * DAY + 10 * HOUR,
+            endTime: todayTime + 3 * DAY + 11 * HOUR,
+            title: 'Dentist checkup',
+            color: COLORS.personal,
+            importance: { duration: 0.3, aiScore: 0.5, manual: 0.5, effective: 0.5 },
+            isLifeEvent: false,
+            source: 'mock'
+        },
+        {
+            id: 'today-11',
+            startTime: todayTime + 5 * DAY,
+            endTime: todayTime + 7 * DAY,
+            title: 'Weekend getaway',
+            color: COLORS.travel,
+            importance: { duration: 0.6, aiScore: 0.8, manual: 0.8, effective: 0.75 },
+            isLifeEvent: false,
+            source: 'mock'
+        },
+        // Last week
+        {
+            id: 'today-12',
+            startTime: todayTime - 3 * DAY + 11 * HOUR,
+            endTime: todayTime - 3 * DAY + 12 * HOUR,
+            title: 'Team retrospective',
+            color: COLORS.work,
+            importance: { duration: 0.3, aiScore: 0.5, manual: 0.5, effective: 0.5 },
+            isLifeEvent: false,
+            source: 'mock'
+        },
+        {
+            id: 'today-13',
+            startTime: todayTime - 5 * DAY + 19 * HOUR,
+            endTime: todayTime - 5 * DAY + 22 * HOUR,
+            title: 'Movie night',
+            color: COLORS.social,
+            importance: { duration: 0.4, aiScore: 0.5, manual: 0.5, effective: 0.5 },
+            isLifeEvent: false,
+            source: 'mock'
+        }
+    ];
+}
+
 export function generateMockEvents(
     count: number = 1000,
-    yearRange: [number, number] = [2000, 2025]
+    yearRange: [number, number] = [2000, 2026]
 ): CalendarEvent[] {
     const events: CalendarEvent[] = [];
     const categories = Object.keys(COLORS) as (keyof typeof COLORS)[];
