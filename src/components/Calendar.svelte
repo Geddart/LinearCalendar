@@ -263,206 +263,117 @@
 	}
 
 	/**
-	 * Update time grid lines and labels based on viewport
+	 * CONTINUOUS SPACING-BASED TIME GRID
 	 *
-	 * SMOOTH LOD TRANSITIONS:
-	 * - Main lines: always at full opacity and height
-	 * - Sub-unit lines: fade in and grow from top as you zoom in toward next level
-	 * - Labels: use consistent styling to avoid jarring font changes
+	 * Instead of discrete LOD levels with thresholds, this system renders
+	 * ALL time units that have sufficient pixel spacing. Each unit type
+	 * fades in/out continuously based on its spacing.
 	 */
 	function updateTimeGrid() {
 		if (!viewport) return;
 
 		const { startTime, endTime, centerTime, pixelsPerMs, width } = viewport;
+		const halfWidth = width / 2;
 
 		// Time constants
+		const MINUTE_MS = 60000;
 		const HOUR_MS = 3600000;
 		const DAY_MS = 86400000;
 		const WEEK_MS = 604800000;
-		const MONTH_MS = 2628000000;
+		const MONTH_MS = 2628000000; // Average month
 		const YEAR_MS = 31536000000;
+		const DECADE_MS = YEAR_MS * 10;
+		const CENTURY_MS = YEAR_MS * 100;
 
-		// Calculate pixels per year for LOD decisions
-		const pxPerYear = YEAR_MS * pixelsPerMs;
+		// Calculate pixel spacing for each time unit
+		const spacings = {
+			minute: MINUTE_MS * pixelsPerMs,
+			hour: HOUR_MS * pixelsPerMs,
+			day: DAY_MS * pixelsPerMs,
+			week: WEEK_MS * pixelsPerMs,
+			month: MONTH_MS * pixelsPerMs,
+			year: YEAR_MS * pixelsPerMs,
+			decade: DECADE_MS * pixelsPerMs,
+			century: CENTURY_MS * pixelsPerMs,
+		};
 
-		// LOD thresholds with next-level info
-		interface LODLevel {
-			unit:
-				| "millennium"
-				| "century"
-				| "decade"
-				| "year"
-				| "month"
-				| "week"
-				| "day"
-				| "hour";
-			threshold: number; // pxPerYear threshold to enter this level
-			nextThreshold: number; // threshold to enter next (more detailed) level
-			yearStep?: number; // for year-based iteration
-			intervalMs?: number; // for time-based iteration
-			subUnit?:
-				| "century"
-				| "decade"
-				| "year"
-				| "month"
-				| "week"
-				| "day"
-				| "hour"
-				| "minute";
-		}
+		// Minimum readable spacing (pixels) for each unit type
+		const minSpacing: Record<string, number> = {
+			minute: 25,
+			hour: 35,
+			day: 50,
+			week: 45,
+			month: 30,
+			year: 25,
+			decade: 30,
+			century: 40,
+		};
 
-		const lodLevels: LODLevel[] = [
-			{
-				unit: "millennium",
-				threshold: 0,
-				nextThreshold: 0.5,
-				yearStep: 1000,
-				subUnit: "century",
-			},
-			{
-				unit: "century",
-				threshold: 0.5,
-				nextThreshold: 5,
-				yearStep: 100,
-				subUnit: "decade",
-			},
-			{
-				unit: "decade",
-				threshold: 5,
-				nextThreshold: 50,
-				yearStep: 10,
-				subUnit: "year",
-			},
-			{
-				unit: "year",
-				threshold: 50,
-				nextThreshold: 400,
-				yearStep: 1,
-				subUnit: "month",
-			},
-			{
-				unit: "month",
-				threshold: 400,
-				nextThreshold: 4000,
-				intervalMs: MONTH_MS,
-				subUnit: "week",
-			},
-			{
-				unit: "week",
-				threshold: 4000,
-				nextThreshold: 15000,
-				intervalMs: WEEK_MS,
-				subUnit: "day",
-			},
-			{
-				unit: "day",
-				threshold: 15000,
-				nextThreshold: 200000,
-				intervalMs: DAY_MS,
-				subUnit: "hour",
-			},
-			{
-				unit: "hour",
-				threshold: 200000,
-				nextThreshold: Infinity,
-				intervalMs: HOUR_MS,
-				subUnit: "minute",
-			},
-		];
+		// Calculate opacity based on spacing
+		const calculateOpacity = (
+			spacing: number,
+			required: number,
+		): number => {
+			const fadeStart = required * 0.4;
+			const fadeEnd = required;
+			if (spacing < fadeStart) return 0;
+			if (spacing >= fadeEnd) return 1;
+			return (spacing - fadeStart) / (fadeEnd - fadeStart);
+		};
 
-		// Find current LOD level
-		let currentLOD = lodLevels[lodLevels.length - 1];
-		for (const lod of lodLevels) {
-			if (pxPerYear >= lod.threshold && pxPerYear < lod.nextThreshold) {
-				currentLOD = lod;
-				break;
-			}
-		}
+		// ISO week number helper
+		const getISOWeek = (d: Date): number => {
+			const date = new Date(d.getTime());
+			date.setHours(0, 0, 0, 0);
+			date.setDate(date.getDate() + 3 - ((date.getDay() + 6) % 7));
+			const week1 = new Date(date.getFullYear(), 0, 4);
+			return (
+				1 +
+				Math.round(
+					((date.getTime() - week1.getTime()) / 86400000 -
+						3 +
+						((week1.getDay() + 6) % 7)) /
+						7,
+				)
+			);
+		};
 
-		// Calculate transition progress (0 = just entered this level, 1 = about to enter next level)
-		const logProgress =
-			(Math.log(pxPerYear) - Math.log(currentLOD.threshold || 0.1)) /
-			(Math.log(currentLOD.nextThreshold) -
-				Math.log(currentLOD.threshold || 0.1));
-		const transitionProgress = Math.max(0, Math.min(1, logProgress));
-
-		// Context labels
+		// Context labels (for the floating card)
 		const centerDate = new Date(centerTime);
 		contextLabels = {
 			year: centerDate.getFullYear().toString(),
 			month: `${centerDate.toLocaleString("en-US", { month: "long" })} ${centerDate.getDate()}`,
-			dayNum: "", // combined with month now
+			dayNum: "",
 			weekday: centerDate.toLocaleString("en-US", { weekday: "long" }),
 		};
 
 		const newGridLines: typeof gridLines = [];
-		const halfWidth = width / 2;
 
-		// Helper to add LOD-specific grid lines (current level only, no major boundaries)
-		function addLODLines() {
+		// Track unit hierarchy for line darkness (larger units = darker)
+		const unitHierarchy: Record<string, number> = {
+			century: 1.0,
+			decade: 0.9,
+			year: 0.85,
+			month: 0.6,
+			week: 0.5,
+			day: 0.4,
+			hour: 0.3,
+			minute: 0.2,
+		};
+
+		// Helper to add grid lines for a time unit type
+		function addUnitLines(
+			unitName: string,
+			opacity: number,
+			getLabel: (date: Date) => string,
+			getImportance: (date: Date) => number,
+			alignDate: (startDate: Date) => Date,
+			incrementDate: (date: Date) => void,
+		) {
+			if (opacity < 0.01) return;
+
 			const startDate = new Date(startTime);
-			let currentDate: Date;
-
-			// Initialize to properly aligned boundary for current LOD
-			switch (currentLOD.unit) {
-				case "millennium":
-					currentDate = new Date(
-						Math.floor(startDate.getFullYear() / 1000) * 1000,
-						0,
-						1,
-					);
-					break;
-				case "century":
-					currentDate = new Date(
-						Math.floor(startDate.getFullYear() / 100) * 100,
-						0,
-						1,
-					);
-					break;
-				case "decade":
-					currentDate = new Date(
-						Math.floor(startDate.getFullYear() / 10) * 10,
-						0,
-						1,
-					);
-					break;
-				case "year":
-					currentDate = new Date(startDate.getFullYear(), 0, 1);
-					break;
-				case "month":
-					currentDate = new Date(
-						startDate.getFullYear(),
-						startDate.getMonth(),
-						1,
-					);
-					break;
-				case "week":
-					// Align to start of week (Sunday)
-					const dayOfWeek = startDate.getDay();
-					currentDate = new Date(
-						startDate.getFullYear(),
-						startDate.getMonth(),
-						startDate.getDate() - dayOfWeek,
-					);
-					break;
-				case "day":
-					currentDate = new Date(
-						startDate.getFullYear(),
-						startDate.getMonth(),
-						startDate.getDate(),
-					);
-					break;
-				case "hour":
-					currentDate = new Date(
-						startDate.getFullYear(),
-						startDate.getMonth(),
-						startDate.getDate(),
-						startDate.getHours(),
-					);
-					break;
-				default:
-					return;
-			}
+			let currentDate = alignDate(startDate);
 
 			while (currentDate.getTime() < endTime) {
 				const currentTime = currentDate.getTime();
@@ -473,722 +384,324 @@
 					screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
 					screenX < width
 				) {
-					let label = "";
-					let isMajor = false;
+					const importance = getImportance(currentDate);
+					const label = getLabel(currentDate);
+					const fontWeight = Math.round(400 + importance * 250);
+					const fontSize = Math.round(10 + importance * 3);
+					const finalOpacity = opacity * (0.5 + importance * 0.5);
 
-					// Generate labels for current LOD level only (NO month/year labels here)
-					switch (currentLOD.unit) {
-						case "millennium":
-						case "century":
-						case "decade":
-						case "year":
-							label = currentDate.getFullYear().toString();
-							isMajor = true;
-							break;
-						case "month":
-							// Month labels only, year boundaries handled separately
-							label = currentDate.toLocaleString("en-US", {
-								month: "short",
-							});
-							isMajor = currentDate.getMonth() === 0; // January
-							break;
-						case "week":
-							// Week labels - ISO week number (W1-W52/53 for the year)
-							const getISOWeek = (d: Date): number => {
-								const date = new Date(d.getTime());
-								date.setHours(0, 0, 0, 0);
-								// Thursday in current week decides the year
-								date.setDate(
-									date.getDate() +
-										3 -
-										((date.getDay() + 6) % 7),
-								);
-								// January 4 is always in week 1
-								const week1 = new Date(
-									date.getFullYear(),
-									0,
-									4,
-								);
-								// Adjust to Thursday in week 1 and count number of weeks from date to week1
-								return (
-									1 +
-									Math.round(
-										((date.getTime() - week1.getTime()) /
-											86400000 -
-											3 +
-											((week1.getDay() + 6) % 7)) /
-											7,
-									)
-								);
-							};
-							label = `W${getISOWeek(currentDate)}`;
-							break;
-						case "day":
-							// Day with weekday: "9 Mon"
-							const weekdayShort = currentDate.toLocaleString(
-								"en-US",
-								{ weekday: "short" },
-							);
-							label = `${currentDate.getDate()} ${weekdayShort}`;
-							break;
-						case "hour":
-							// Always set label - opacity will control visibility
-							label = `${currentDate.getHours()}h`;
-							break;
-					}
-
-					// Calculate continuous importance (0-1) based on hierarchical position
-					// Higher importance = decade boundaries, month starts, etc.
-					let importance = 0.5; // Base importance
-					const year = currentDate.getFullYear();
-					const month = currentDate.getMonth();
-					const day = currentDate.getDate();
-					const hour = currentDate.getHours();
-
-					switch (currentLOD.unit) {
-						case "millennium":
-							importance = 1.0; // All millenniums are important
-							break;
-						case "century":
-							importance = year % 1000 === 0 ? 1.0 : 0.7; // Millennium starts are more important
-							break;
-						case "decade":
-							importance =
-								year % 100 === 0
-									? 1.0
-									: year % 50 === 0
-										? 0.85
-										: 0.7;
-							break;
-						case "year":
-							// Decade starts are more important than regular years
-							importance =
-								year % 10 === 0
-									? 0.9
-									: year % 5 === 0
-										? 0.7
-										: 0.5;
-							break;
-						case "month":
-							importance = month === 0 ? 0.9 : 0.6; // January is more important
-							break;
-						case "week":
-							importance = 0.5;
-							break;
-						case "day":
-							importance = day === 1 ? 0.8 : 0.5; // Month start is more important
-							break;
-						case "hour":
-							importance =
-								hour === 0 ? 0.8 : hour % 6 === 0 ? 0.6 : 0.4;
-							break;
-					}
-
-					// Smooth weight: 400 (light) to 650 (semibold) based on importance
-					// Also factor in transitionProgress for smooth LOD transitions
-					const baseWeight = 400 + importance * 200;
-					const progressBoost = transitionProgress * 50; // Slight boost as we zoom in
-					const finalWeight = Math.round(
-						Math.min(650, baseWeight + progressBoost),
+					// Proximity check: skip if a label already exists within 15px
+					// This prevents stacking (e.g., year + month + day at Jan 1)
+					const MIN_LABEL_DISTANCE = 15;
+					const tooClose = newGridLines.some(
+						(line) =>
+							Math.abs(line.x - screenX) < MIN_LABEL_DISTANCE,
 					);
 
-					// Font size: 11px to 13px based on importance
-					const fontSize = 11 + importance * 2;
-
-					// Calculate continuous opacity for hour labels
-					// Each hour has a "required spacing" inversely related to importance
-					// Opacity fades smoothly from 0 to 1 as spacing approaches required value
-					let lineOpacity = 1;
-					let labelOpacity = 1;
-
-					if (currentLOD.unit === "hour") {
-						const hourSpacing = HOUR_MS * pixelsPerMs;
-
-						// Required spacing based on hour importance
-						// 0, 12 need less space (appear first), regular hours need more
-						let requiredSpacing: number;
-						if (hour % 12 === 0) {
-							requiredSpacing = 10; // 0h and 12h
-						} else if (hour % 6 === 0) {
-							requiredSpacing = 25; // 6h and 18h
-						} else if (hour % 3 === 0) {
-							requiredSpacing = 35; // 3, 9, 15, 21
-						} else {
-							requiredSpacing = 45; // all other hours
-						}
-
-						// Calculate continuous opacity: 0 at requiredSpacing/2, 1 at requiredSpacing
-						// This creates a smooth fade-in as you zoom in
-						const fadeStart = requiredSpacing * 0.5;
-						const fadeEnd = requiredSpacing;
-						labelOpacity = Math.min(
-							1,
-							Math.max(
-								0,
-								(hourSpacing - fadeStart) /
-									(fadeEnd - fadeStart),
-							),
-						);
-					}
-
-					newGridLines.push({
-						key: `lod-${currentDate.getTime()}`,
-						x: screenX,
-						label: labelOpacity > 0.05 ? label : "", // Hide label if nearly invisible
-						isMajor: importance > 0.7, // Keep for color styling
-						opacity: lineOpacity,
-						lineHeight: 1,
-						isSubUnit: false,
-						fontWeight: finalWeight,
-						fontSize: Math.round(fontSize),
-						labelOpacity: labelOpacity, // New field for label-specific opacity
-					});
-				}
-
-				// Increment using calendar for proper alignment
-				switch (currentLOD.unit) {
-					case "millennium":
-						currentDate.setFullYear(
-							currentDate.getFullYear() + 1000,
-						);
-						break;
-					case "century":
-						currentDate.setFullYear(
-							currentDate.getFullYear() + 100,
-						);
-						break;
-					case "decade":
-						currentDate.setFullYear(currentDate.getFullYear() + 10);
-						break;
-					case "year":
-						currentDate.setFullYear(currentDate.getFullYear() + 1);
-						break;
-					case "month":
-						currentDate.setMonth(currentDate.getMonth() + 1);
-						break;
-					case "week":
-						currentDate.setDate(currentDate.getDate() + 7);
-						break;
-					case "day":
-						currentDate.setDate(currentDate.getDate() + 1);
-						break;
-					case "hour":
-						currentDate.setHours(currentDate.getHours() + 1);
-						break;
-				}
-			}
-		}
-
-		// Helper to add major boundaries at EXACT calendar positions
-		// These are always calendar-aligned regardless of current LOD
-		function addMajorBoundaries() {
-			const startDate = new Date(startTime);
-
-			// Add month boundaries (for week/day/hour views)
-			if (["week", "day", "hour"].includes(currentLOD.unit)) {
-				let monthDate = new Date(
-					startDate.getFullYear(),
-					startDate.getMonth(),
-					1,
-				);
-
-				while (monthDate.getTime() < endTime) {
-					const screenX =
-						halfWidth +
-						(monthDate.getTime() - centerTime) * pixelsPerMs;
-
-					if (
-						screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
-						screenX < width
-					) {
-						// Check if there's already a line very close (to prevent duplicates)
-						const hasDuplicate = newGridLines.some(
-							(l) => Math.abs(l.x - screenX) < 3,
-						);
-
-						if (!hasDuplicate) {
-							newGridLines.push({
-								key: `month-${monthDate.getTime()}`,
-								x: screenX,
-								label:
-									monthDate.getMonth() === 0
-										? monthDate.getFullYear().toString()
-										: monthDate.toLocaleString("en-US", {
-												month: "short",
-											}),
-								isMajor: true,
-								opacity: 1,
-								lineHeight: 1,
-								isSubUnit: false,
-								fontWeight: 600,
-								fontSize: 13,
-							});
-						} else {
-							// Update existing line to be major with month label
-							const existing = newGridLines.find(
-								(l) => Math.abs(l.x - screenX) < 3,
-							);
-							if (existing) {
-								existing.label =
-									monthDate.getMonth() === 0
-										? monthDate.getFullYear().toString()
-										: monthDate.toLocaleString("en-US", {
-												month: "short",
-											});
-								existing.isMajor = true;
-							}
-						}
-					}
-
-					monthDate.setMonth(monthDate.getMonth() + 1);
-				}
-			}
-
-			// Add year boundaries (for month view)
-			if (currentLOD.unit === "month") {
-				let yearDate = new Date(startDate.getFullYear(), 0, 1);
-
-				while (yearDate.getTime() < endTime) {
-					const screenX =
-						halfWidth +
-						(yearDate.getTime() - centerTime) * pixelsPerMs;
-
-					if (
-						screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
-						screenX < width
-					) {
-						// Update the January line to show year instead
-						const existing = newGridLines.find(
-							(l) => Math.abs(l.x - screenX) < 3,
-						);
-						if (existing) {
-							existing.label = yearDate.getFullYear().toString();
-							existing.isMajor = true;
-						}
-					}
-
-					yearDate.setFullYear(yearDate.getFullYear() + 1);
-				}
-			}
-
-			// Add day boundaries (for hour view) - shows "9 Mon" format
-			if (currentLOD.unit === "hour") {
-				let dayDate = new Date(
-					startDate.getFullYear(),
-					startDate.getMonth(),
-					startDate.getDate(),
-				);
-
-				while (dayDate.getTime() < endTime) {
-					const screenX =
-						halfWidth +
-						(dayDate.getTime() - centerTime) * pixelsPerMs;
-
-					if (
-						screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
-						screenX < width
-					) {
-						const weekdayShort = dayDate.toLocaleString("en-US", {
-							weekday: "short",
-						});
-						const dayLabel = `${dayDate.getDate()} ${weekdayShort}`;
-
-						// Check if there's already a line very close (to prevent duplicates)
-						const hasDuplicate = newGridLines.some(
-							(l) => Math.abs(l.x - screenX) < 3,
-						);
-
-						if (!hasDuplicate) {
-							newGridLines.push({
-								key: `day-${dayDate.getTime()}`,
-								x: screenX,
-								label: dayLabel,
-								isMajor: true,
-								opacity: 1,
-								lineHeight: 1,
-								isSubUnit: false,
-								fontWeight: 600,
-								fontSize: 13,
-							});
-						} else {
-							// Update existing line
-							const existing = newGridLines.find(
-								(l) => Math.abs(l.x - screenX) < 3,
-							);
-							if (existing) {
-								existing.label = dayLabel;
-								existing.isMajor = true;
-							}
-						}
-					}
-
-					dayDate.setDate(dayDate.getDate() + 1);
-				}
-			}
-		}
-
-		// Helper to add sub-unit indicators that fade in as you zoom
-		function addSubUnitLines() {
-			// Special handling for minutes - always call (uses its own spacing-based visibility)
-			// This must come before transitionProgress check because hour LOD has nextThreshold: Infinity
-			// which causes transitionProgress calculation to fail
-			if (currentLOD.subUnit === "minute") {
-				addProgressiveMinutes(1); // Full opacity - spacing controls visibility
-				return;
-			}
-
-			if (!currentLOD.subUnit || transitionProgress < 0.3) return;
-
-			const subOpacity = Math.min(1, (transitionProgress - 0.3) / 0.5); // Fade in from 30% to 80%
-
-			// Use calendar-based iteration for other sub-units
-			const startDate = new Date(startTime);
-			let currentDate: Date;
-
-			switch (currentLOD.subUnit) {
-				case "century":
-					// Centuries within millennia
-					currentDate = new Date(
-						Math.floor(startDate.getFullYear() / 100) * 100,
-						0,
-						1,
-					);
-					break;
-				case "decade":
-					// Decades within centuries
-					currentDate = new Date(
-						Math.floor(startDate.getFullYear() / 10) * 10,
-						0,
-						1,
-					);
-					break;
-				case "year":
-					// Years within decades
-					currentDate = new Date(startDate.getFullYear(), 0, 1);
-					break;
-				case "month":
-					// Months within years - start at beginning of year
-					currentDate = new Date(
-						startDate.getFullYear(),
-						startDate.getMonth(),
-						1,
-					);
-					break;
-				case "week":
-					// Weeks - align to actual Sunday boundaries for consistency
-					// Find the Sunday on or before startDate
-					const dayOfWeek = startDate.getDay(); // 0 = Sunday
-					currentDate = new Date(
-						startDate.getFullYear(),
-						startDate.getMonth(),
-						startDate.getDate() - dayOfWeek,
-					);
-					break;
-				case "day":
-					// Days within weeks
-					currentDate = new Date(
-						startDate.getFullYear(),
-						startDate.getMonth(),
-						startDate.getDate(),
-					);
-					break;
-				case "hour":
-					// Hours within days
-					currentDate = new Date(
-						startDate.getFullYear(),
-						startDate.getMonth(),
-						startDate.getDate(),
-						startDate.getHours(),
-					);
-					break;
-				default:
-					return;
-			}
-
-			while (currentDate.getTime() < endTime) {
-				const currentTime = currentDate.getTime();
-				const screenX =
-					halfWidth + (currentTime - centerTime) * pixelsPerMs;
-
-				if (screenX > 0 && screenX < width) {
-					// Check if this sub-unit aligns with a parent boundary (should be skipped)
-					let isParentBoundary = false;
-					switch (currentLOD.subUnit) {
-						case "century":
-							isParentBoundary =
-								currentDate.getFullYear() % 1000 === 0;
-							break;
-						case "decade":
-							isParentBoundary =
-								currentDate.getFullYear() % 100 === 0;
-							break;
-						case "year":
-							isParentBoundary =
-								currentDate.getFullYear() % 10 === 0;
-							break;
-						case "month":
-							isParentBoundary = currentDate.getMonth() === 0; // January = year boundary
-							break;
-						case "week":
-							isParentBoundary =
-								currentDate.getDate() <= 7 &&
-								currentDate.getMonth() !==
-									new Date(
-										currentTime - 604800000,
-									).getMonth();
-							break;
-						case "day":
-							isParentBoundary = currentDate.getDate() === 1; // First of month
-							break;
-						case "hour":
-							isParentBoundary = currentDate.getHours() === 0; // Midnight
-							break;
-					}
-
-					// Calculate opacity reduction based on proximity to existing lines
-					// Lines fade out smoothly as they get closer to other lines
-					const fadeDistance = 40; // Distance at which fade starts
-					let proximityFactor = 1.0;
-					for (const line of newGridLines) {
-						const dist = Math.abs(line.x - screenX);
-						if (dist < fadeDistance) {
-							// Smooth fade: full opacity at fadeDistance, zero at 0
-							proximityFactor = Math.min(
-								proximityFactor,
-								dist / fadeDistance,
-							);
-						}
-					}
-
-					const finalOpacity = subOpacity * proximityFactor;
-
-					// Only add if opacity is visible and not a parent boundary
-					if (!isParentBoundary && finalOpacity > 0.05) {
-						// Generate label for sub-unit (will fade in as it approaches becoming the main unit)
-						let subLabel = "";
-						switch (currentLOD.subUnit) {
-							case "century":
-								subLabel = currentDate.getFullYear().toString();
-								break;
-							case "decade":
-								subLabel = currentDate.getFullYear().toString();
-								break;
-							case "year":
-								subLabel = currentDate.getFullYear().toString();
-								break;
-							case "month":
-								subLabel = currentDate.toLocaleString("en-US", {
-									month: "short",
-								});
-								break;
-							case "week":
-								subLabel = `W${Math.ceil(currentDate.getDate() / 7)}`;
-								break;
-							case "day":
-								const dayWeekday = currentDate.toLocaleString(
-									"en-US",
-									{ weekday: "short" },
-								);
-								subLabel = `${currentDate.getDate()} ${dayWeekday}`;
-								break;
-							case "hour":
-								// Hour labels - continuous opacity based on spacing/importance
-								const subHourSpacing = HOUR_MS * pixelsPerMs;
-								const subHourValue = currentDate.getHours();
-
-								// Required spacing based on hour importance
-								let subRequiredSpacing: number;
-								if (subHourValue % 12 === 0) {
-									subRequiredSpacing = 10; // 0h and 12h
-								} else if (subHourValue % 6 === 0) {
-									subRequiredSpacing = 25; // 6h and 18h
-								} else if (subHourValue % 3 === 0) {
-									subRequiredSpacing = 35; // 3, 9, 15, 21
-								} else {
-									subRequiredSpacing = 45; // all other hours
-								}
-
-								// Calculate continuous label opacity
-								const subFadeStart = subRequiredSpacing * 0.5;
-								const subFadeEnd = subRequiredSpacing;
-								const subLabelOpacity = Math.min(
-									1,
-									Math.max(
-										0,
-										(subHourSpacing - subFadeStart) /
-											(subFadeEnd - subFadeStart),
-									),
-								);
-
-								// Always set label, but store opacity for use below
-								subLabel = `${subHourValue}h`;
-
-								// We need to pass this opacity - store temporarily
-								(currentDate as any)._labelOpacity =
-									subLabelOpacity;
-								break;
-						}
-
-						// Get the label opacity if it was set for hours
-						const hourLabelOpacity = (currentDate as any)
-							._labelOpacity;
-						delete (currentDate as any)._labelOpacity;
+					if (!tooClose) {
+						// Use unit hierarchy to determine if line is major (darker)
+						const hierarchyLevel = unitHierarchy[unitName] || 0.5;
+						const isMajorLine = hierarchyLevel >= 0.85; // year, decade, century are major
+						const isSubLine = hierarchyLevel <= 0.4; // day, hour, minute are sub-units
 
 						newGridLines.push({
-							key: `sub-${currentTime}`,
+							key: `${unitName}-${currentTime}`,
 							x: screenX,
-							label:
-								hourLabelOpacity !== undefined &&
-								hourLabelOpacity < 0.05
-									? ""
-									: subLabel,
-							isMajor: false,
+							label: label,
+							isMajor: isMajorLine,
 							opacity: finalOpacity,
 							lineHeight: 1,
-							isSubUnit: true,
-							fontWeight: 400 + Math.round(finalOpacity * 150),
-							fontSize: 11,
-							labelOpacity:
-								hourLabelOpacity !== undefined
-									? hourLabelOpacity * finalOpacity
-									: finalOpacity,
+							isSubUnit: isSubLine,
+							fontWeight: fontWeight,
+							fontSize: fontSize,
+							labelOpacity: finalOpacity,
 						});
 					}
 				}
 
-				// Increment using calendar for proper alignment
-				switch (currentLOD.subUnit) {
-					case "century":
-						currentDate.setFullYear(
-							currentDate.getFullYear() + 100,
-						);
-						break;
-					case "decade":
-						currentDate.setFullYear(currentDate.getFullYear() + 10);
-						break;
-					case "year":
-						currentDate.setFullYear(currentDate.getFullYear() + 1);
-						break;
-					case "month":
-						currentDate.setMonth(currentDate.getMonth() + 1);
-						break;
-					case "week":
-						currentDate.setDate(currentDate.getDate() + 7);
-						break;
-					case "day":
-						currentDate.setDate(currentDate.getDate() + 1);
-						break;
-					case "hour":
-						currentDate.setHours(currentDate.getHours() + 1);
-						break;
-				}
+				incrementDate(currentDate);
 			}
 		}
 
-		// Continuous minute visibility based on spacing and importance
-		function addProgressiveMinutes(baseOpacity: number) {
-			const MINUTE_MS = 60000;
-			const minuteSpacing = MINUTE_MS * pixelsPerMs;
+		// CENTURY LABELS
+		if (spacings.century > minSpacing.century * 0.4) {
+			const opacity = calculateOpacity(
+				spacings.century,
+				minSpacing.century,
+			);
+			addUnitLines(
+				"century",
+				opacity,
+				(d) => d.getFullYear().toString(),
+				() => 1.0,
+				(d) => new Date(Math.floor(d.getFullYear() / 100) * 100, 0, 1),
+				(d) => d.setFullYear(d.getFullYear() + 100),
+			);
+		}
 
-			// If spacing is too small for any minutes, skip entirely
-			if (minuteSpacing < 3) return;
+		// DECADE LABELS
+		if (spacings.decade > minSpacing.decade * 0.4) {
+			const opacity = calculateOpacity(
+				spacings.decade,
+				minSpacing.decade,
+			);
+			addUnitLines(
+				"decade",
+				opacity,
+				(d) => d.getFullYear().toString(),
+				(d) => (d.getFullYear() % 100 === 0 ? 1.0 : 0.7),
+				(d) => new Date(Math.floor(d.getFullYear() / 10) * 10, 0, 1),
+				(d) => d.setFullYear(d.getFullYear() + 10),
+			);
+		}
 
+		// YEAR LABELS
+		if (spacings.year > minSpacing.year * 0.4) {
+			const opacity = calculateOpacity(spacings.year, minSpacing.year);
+			addUnitLines(
+				"year",
+				opacity,
+				(d) => d.getFullYear().toString(),
+				(d) =>
+					d.getFullYear() % 10 === 0
+						? 1.0
+						: d.getFullYear() % 5 === 0
+							? 0.8
+							: 0.5,
+				(d) => new Date(d.getFullYear(), 0, 1),
+				(d) => d.setFullYear(d.getFullYear() + 1),
+			);
+		}
+
+		// MONTH LABELS
+		if (spacings.month > minSpacing.month * 0.4) {
+			const opacity = calculateOpacity(spacings.month, minSpacing.month);
+			addUnitLines(
+				"month",
+				opacity,
+				(d) =>
+					d.getMonth() === 0
+						? d.getFullYear().toString()
+						: d.toLocaleString("en-US", { month: "short" }),
+				(d) => (d.getMonth() === 0 ? 1.0 : 0.6),
+				(d) => new Date(d.getFullYear(), d.getMonth(), 1),
+				(d) => d.setMonth(d.getMonth() + 1),
+			);
+		}
+
+		// WEEK LABELS
+		if (spacings.week > minSpacing.week * 0.4) {
+			const opacity = calculateOpacity(spacings.week, minSpacing.week);
+			addUnitLines(
+				"week",
+				opacity,
+				(d) => `W${getISOWeek(d)}`,
+				() => 0.5,
+				(d) => {
+					const dow = d.getDay();
+					return new Date(
+						d.getFullYear(),
+						d.getMonth(),
+						d.getDate() - dow,
+					);
+				},
+				(d) => d.setDate(d.getDate() + 7),
+			);
+		}
+
+		// DAY LABELS
+		if (spacings.day > minSpacing.day * 0.4) {
+			const opacity = calculateOpacity(spacings.day, minSpacing.day);
+			addUnitLines(
+				"day",
+				opacity,
+				(d) =>
+					`${d.getDate()} ${d.toLocaleString("en-US", { weekday: "short" })}`,
+				(d) => (d.getDate() === 1 ? 1.0 : 0.5),
+				(d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()),
+				(d) => d.setDate(d.getDate() + 1),
+			);
+		}
+
+		// HOUR LABELS - Progressive disclosure based on spacing
+		// Midnight/noon first, then 6am/6pm, then every 3h, then every hour
+		// PERFORMANCE: Skip entirely if spacing is too small for even midnight to show
+		if (spacings.hour >= 2.5) {
+			// Minimum spacing for any hour to appear
+			const hourSpacing = spacings.hour;
 			const startDate = new Date(startTime);
-			// Start at the beginning of the hour
-			let hourDate = new Date(
+			let currentDate = new Date(
 				startDate.getFullYear(),
 				startDate.getMonth(),
 				startDate.getDate(),
 				startDate.getHours(),
-				0,
 			);
 
-			while (hourDate.getTime() < endTime) {
-				// Iterate through all 60 minutes
-				for (let minute = 1; minute < 60; minute++) {
-					const minuteDate = new Date(hourDate.getTime());
-					minuteDate.setMinutes(minute);
+			while (currentDate.getTime() < endTime) {
+				const hour = currentDate.getHours();
 
-					const currentTime = minuteDate.getTime();
-					if (currentTime < startTime || currentTime > endTime)
-						continue;
+				// Progressive disclosure thresholds:
+				// - Midnight (0h) appears when spacing >= 5px
+				// - Noon (12h) appears when spacing >= 8px
+				// - 6am/6pm appears when spacing >= 12px
+				// - 3h/9h/15h/21h appears when spacing >= 18px
+				// - All others appear when spacing >= 25px
+				let requiredSpacing: number;
+				let importance: number;
 
+				if (hour === 0) {
+					requiredSpacing = 5;
+					importance = 1.0;
+				} else if (hour === 12) {
+					requiredSpacing = 8;
+					importance = 0.9;
+				} else if (hour % 6 === 0) {
+					requiredSpacing = 12;
+					importance = 0.7;
+				} else if (hour % 3 === 0) {
+					requiredSpacing = 18;
+					importance = 0.5;
+				} else {
+					requiredSpacing = 25;
+					importance = 0.3;
+				}
+
+				const fadeStart = requiredSpacing * 0.5;
+				const fadeEnd = requiredSpacing;
+				let hourOpacity = 0;
+				if (hourSpacing >= fadeEnd) {
+					hourOpacity = 1;
+				} else if (hourSpacing > fadeStart) {
+					hourOpacity =
+						(hourSpacing - fadeStart) / (fadeEnd - fadeStart);
+				}
+
+				if (hourOpacity > 0.01) {
+					const currentTime = currentDate.getTime();
 					const screenX =
 						halfWidth + (currentTime - centerTime) * pixelsPerMs;
 
-					if (screenX > 0 && screenX < width) {
-						// Calculate required spacing based on minute importance
-						// :30 appears first, then :15/:45, then :10 marks, then :05, then all
-						let requiredSpacing: number;
-						if (minute === 30) {
-							requiredSpacing = 5; // :30 needs least space - appears very early
-						} else if (minute === 15 || minute === 45) {
-							requiredSpacing = 10; // :15, :45
-						} else if (minute % 10 === 0) {
-							requiredSpacing = 18; // :10, :20, :40, :50
-						} else if (minute % 5 === 0) {
-							requiredSpacing = 25; // :05, :25, :35, :55
-						} else {
-							requiredSpacing = 35; // all other minutes
-						}
-
-						// Calculate continuous opacity based on spacing
-						const fadeStart = requiredSpacing * 0.5;
-						const fadeEnd = requiredSpacing;
-						let minuteOpacity = Math.min(
-							1,
-							Math.max(
-								0,
-								(minuteSpacing - fadeStart) /
-									(fadeEnd - fadeStart),
-							),
+					if (
+						screenX > (isMobile ? 0 : CONTEXT_COL_WIDTH) &&
+						screenX < width
+					) {
+						// Proximity check
+						const MIN_LABEL_DISTANCE = 15;
+						const tooClose = newGridLines.some(
+							(line) =>
+								Math.abs(line.x - screenX) < MIN_LABEL_DISTANCE,
 						);
 
-						// Also factor in base opacity (from sub-unit fade)
-						minuteOpacity *= baseOpacity;
+						if (!tooClose) {
+							const finalOpacity =
+								hourOpacity * (0.5 + importance * 0.5);
+							const hierarchyLevel = unitHierarchy["hour"] || 0.3;
 
-						// Use spacing-based opacity directly (no proximity fade - it causes flicker when panning)
-						const finalOpacity = minuteOpacity;
-
-						// DEBUG: Log :15 visibility to trace flickering (only when panning)
-						if (
-							(minute === 15 || minute === 45) &&
-							centerTime !== debugLastCenterTime
-						) {
-							console.log(
-								`Minute :${minute} - spacing: ${minuteSpacing.toFixed(2)}px, required: ${requiredSpacing}px, fadeStart: ${fadeStart.toFixed(1)}px, opacity: ${finalOpacity.toFixed(3)}, visible: ${finalOpacity > 0.05}`,
-							);
-						}
-
-						if (finalOpacity > 0.05) {
 							newGridLines.push({
-								key: `min-${currentTime}`,
+								key: `hour-${currentTime}`,
 								x: screenX,
-								label: `:${minute.toString().padStart(2, "0")}`,
-								isMajor: false,
+								label: `${hour}h`,
+								isMajor: hour === 0, // Midnight is major
 								opacity: finalOpacity,
 								lineHeight: 1,
-								isSubUnit: true,
-								fontWeight:
-									400 + Math.round(finalOpacity * 150),
-								fontSize: 10,
+								isSubUnit: hierarchyLevel <= 0.4,
+								fontWeight: Math.round(400 + importance * 200),
+								fontSize: Math.round(10 + importance * 2),
 								labelOpacity: finalOpacity,
 							});
 						}
 					}
 				}
 
-				hourDate.setHours(hourDate.getHours() + 1);
+				currentDate.setHours(currentDate.getHours() + 1);
 			}
 		}
 
-		addLODLines();
-		addMajorBoundaries();
-		addSubUnitLines();
+		// MINUTE LABELS - Progressive disclosure based on spacing
+		// :30 appears first, then :15/:45, then :10 intervals, then :05, then all
+		// PERFORMANCE: Skip entirely if spacing is too small for even :30 to show
+		if (spacings.minute >= 2.5) {
+			// Minimum spacing for any minute to appear
+			const minuteSpacing = spacings.minute;
+			const startDate = new Date(startTime);
+			let currentDate = new Date(
+				startDate.getFullYear(),
+				startDate.getMonth(),
+				startDate.getDate(),
+				startDate.getHours(),
+				startDate.getMinutes(),
+			);
+
+			while (currentDate.getTime() < endTime) {
+				const minute = currentDate.getMinutes();
+				if (minute !== 0) {
+					// Progressive disclosure thresholds:
+					// - :30 appears when spacing >= 5px
+					// - :15/:45 appears when spacing >= 10px
+					// - :10/:20/:40/:50 appears when spacing >= 15px
+					// - :05/:25/:35/:55 appears when spacing >= 18px
+					// - All others appear when spacing >= 22px
+					let requiredSpacing: number;
+					let importance: number;
+
+					if (minute === 30) {
+						requiredSpacing = 5;
+						importance = 0.9;
+					} else if (minute === 15 || minute === 45) {
+						requiredSpacing = 10;
+						importance = 0.7;
+					} else if (minute % 10 === 0) {
+						requiredSpacing = 15;
+						importance = 0.55;
+					} else if (minute % 5 === 0) {
+						requiredSpacing = 18;
+						importance = 0.45;
+					} else {
+						requiredSpacing = 22;
+						importance = 0.3;
+					}
+
+					// Calculate opacity for this specific minute type
+					const fadeStart = requiredSpacing * 0.5;
+					const fadeEnd = requiredSpacing;
+					let minuteOpacity = 0;
+					if (minuteSpacing >= fadeEnd) {
+						minuteOpacity = 1;
+					} else if (minuteSpacing > fadeStart) {
+						minuteOpacity =
+							(minuteSpacing - fadeStart) / (fadeEnd - fadeStart);
+					}
+
+					if (minuteOpacity > 0.01) {
+						const currentTime = currentDate.getTime();
+						const screenX =
+							halfWidth +
+							(currentTime - centerTime) * pixelsPerMs;
+
+						if (screenX > 0 && screenX < width) {
+							const finalOpacity =
+								minuteOpacity * (0.5 + importance * 0.5);
+
+							newGridLines.push({
+								key: `minute-${currentTime}`,
+								x: screenX,
+								label: `:${minute.toString().padStart(2, "0")}`,
+								isMajor: false,
+								opacity: finalOpacity,
+								lineHeight: 1,
+								isSubUnit: true,
+								fontWeight: Math.round(400 + importance * 150),
+								fontSize: 10,
+								labelOpacity: finalOpacity,
+							});
+						}
+					}
+				}
+				currentDate.setMinutes(currentDate.getMinutes() + 1);
+			}
+		}
 
 		gridLines = newGridLines;
-
-		// DEBUG: Update last center time to throttle logging
 		debugLastCenterTime = centerTime;
 	}
 
@@ -1404,16 +917,17 @@
 		position: absolute;
 		top: 0;
 		width: 1px;
-		background: #ddd;
+		background: #ccc;
 		transition: opacity 0.2s ease;
 	}
 
 	.grid-line.major {
-		background: #bbb;
+		background: #999;
+		width: 1px;
 	}
 
 	.grid-line.sub-unit {
-		background: #ccc;
+		background: #ddd;
 	}
 
 	.grid-label {
