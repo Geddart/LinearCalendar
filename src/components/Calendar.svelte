@@ -69,6 +69,8 @@
 		opacity: number; // For fade transitions (0-1)
 		lineHeight: number; // For growing sub-indicators (0-1, 1 = full height)
 		isSubUnit: boolean; // Is this a sub-unit indicator?
+		fontWeight: number; // Variable font weight (400-700) for smooth transitions
+		fontSize: number; // Font size in pixels (11-13) for smooth transitions
 	}[] = [];
 	let contextLabels = { year: "", month: "", dayNum: "", weekday: "" };
 	let showMonth = false;
@@ -489,13 +491,73 @@
 							break;
 					}
 
+					// Calculate continuous importance (0-1) based on hierarchical position
+					// Higher importance = decade boundaries, month starts, etc.
+					let importance = 0.5; // Base importance
+					const year = currentDate.getFullYear();
+					const month = currentDate.getMonth();
+					const day = currentDate.getDate();
+					const hour = currentDate.getHours();
+
+					switch (currentLOD.unit) {
+						case "millennium":
+							importance = 1.0; // All millenniums are important
+							break;
+						case "century":
+							importance = year % 1000 === 0 ? 1.0 : 0.7; // Millennium starts are more important
+							break;
+						case "decade":
+							importance =
+								year % 100 === 0
+									? 1.0
+									: year % 50 === 0
+										? 0.85
+										: 0.7;
+							break;
+						case "year":
+							// Decade starts are more important than regular years
+							importance =
+								year % 10 === 0
+									? 0.9
+									: year % 5 === 0
+										? 0.7
+										: 0.5;
+							break;
+						case "month":
+							importance = month === 0 ? 0.9 : 0.6; // January is more important
+							break;
+						case "week":
+							importance = 0.5;
+							break;
+						case "day":
+							importance = day === 1 ? 0.8 : 0.5; // Month start is more important
+							break;
+						case "hour":
+							importance =
+								hour === 0 ? 0.8 : hour % 6 === 0 ? 0.6 : 0.4;
+							break;
+					}
+
+					// Smooth weight: 400 (light) to 650 (semibold) based on importance
+					// Also factor in transitionProgress for smooth LOD transitions
+					const baseWeight = 400 + importance * 200;
+					const progressBoost = transitionProgress * 50; // Slight boost as we zoom in
+					const finalWeight = Math.round(
+						Math.min(650, baseWeight + progressBoost),
+					);
+
+					// Font size: 11px to 13px based on importance
+					const fontSize = 11 + importance * 2;
+
 					newGridLines.push({
 						x: screenX,
 						label,
-						isMajor,
+						isMajor: importance > 0.7, // Keep for color styling
 						opacity: 1,
 						lineHeight: 1,
 						isSubUnit: false,
+						fontWeight: finalWeight,
+						fontSize: Math.round(fontSize),
 					});
 				}
 
@@ -570,6 +632,8 @@
 								opacity: 1,
 								lineHeight: 1,
 								isSubUnit: false,
+								fontWeight: 600,
+								fontSize: 13,
 							});
 						} else {
 							// Update existing line to be major with month label
@@ -648,6 +712,8 @@
 								opacity: 1,
 								lineHeight: 1,
 								isSubUnit: false,
+								fontWeight: 600,
+								fontSize: 13,
 							});
 						} else {
 							// Update existing line
@@ -840,6 +906,8 @@
 							opacity: finalOpacity,
 							lineHeight: 1,
 							isSubUnit: true,
+							fontWeight: 400 + Math.round(finalOpacity * 150),
+							fontSize: 11,
 						});
 					}
 				}
@@ -951,6 +1019,9 @@
 									opacity: finalOpacity,
 									lineHeight: 1,
 									isSubUnit: true,
+									fontWeight:
+										400 + Math.round(finalOpacity * 150),
+									fontSize: 10,
 								});
 							}
 						}
@@ -1029,7 +1100,8 @@
 					<span
 						class="grid-label"
 						class:major={line.isMajor}
-						style="opacity: {line.opacity};">{line.label}</span
+						style="opacity: {line.opacity}; font-weight: {line.fontWeight}; font-size: {line.fontSize}px;"
+						>{line.label}</span
 					>
 				{/if}
 			</div>
@@ -1191,15 +1263,24 @@
 		position: absolute;
 		top: 8px;
 		left: 6px;
-		font-size: 11px;
-		color: #999;
-		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+		font-size: 12px; /* Base size - but can be overridden inline */
+		color: #888;
+		font-family:
+			"Inter",
+			-apple-system,
+			BlinkMacSystemFont,
+			"Segoe UI",
+			sans-serif;
 		white-space: nowrap;
+		/* Smooth transitions for opacity and color */
+		transition:
+			opacity 0.15s ease,
+			color 0.15s ease;
+		/* font-weight and font-size are set inline for smooth variable font transitions */
 	}
 
 	.grid-label.major {
-		font-size: 13px;
-		font-weight: 600;
+		/* Only color changes for major - size controlled via inline style */
 		color: #333;
 	}
 
