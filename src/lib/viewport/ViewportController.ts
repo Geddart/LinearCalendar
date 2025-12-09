@@ -133,6 +133,9 @@ export class ViewportController {
      * @param zoomDelta - Positive = zoom in, negative = zoom out
      */
     zoomAt(screenX: number, zoomDelta: number) {
+        // Exit follow-now mode on any zoom interaction
+        this.stopFollowNow();
+
         // Get time at cursor BEFORE zoom
         const pivotTime = this.screenToTime(screenX);
 
@@ -148,13 +151,18 @@ export class ViewportController {
 
         this.state.pixelsPerMs = newPixelsPerMs;
 
-        // Adjust center so pivot point stays at same screen position
-        // MATH: If pivotTime should be at screenX after zoom:
-        //   screenX = width/2 + (pivotTime - newCenter) * newPixelsPerMs
-        //   Solve for newCenter:
-        //   newCenter = pivotTime - (screenX - width/2) / newPixelsPerMs
-        const newOffsetFromCenter = screenX - this.state.width / 2;
-        this.state.centerTime = pivotTime - newOffsetFromCenter / this.state.pixelsPerMs;
+        // If snapped to now, keep centered on now instead of pivot point
+        if (this.snappedToNow) {
+            this.state.centerTime = Date.now();
+        } else {
+            // Adjust center so pivot point stays at same screen position
+            // MATH: If pivotTime should be at screenX after zoom:
+            //   screenX = width/2 + (pivotTime - newCenter) * newPixelsPerMs
+            //   Solve for newCenter:
+            //   newCenter = pivotTime - (screenX - width/2) / newPixelsPerMs
+            const newOffsetFromCenter = screenX - this.state.width / 2;
+            this.state.centerTime = pivotTime - newOffsetFromCenter / this.state.pixelsPerMs;
+        }
 
         this.updateDerived();
     }
@@ -165,8 +173,18 @@ export class ViewportController {
      * @param deltaX - Pixels to pan (positive = move right in time)
      */
     pan(deltaX: number) {
+        // Exit follow-now mode on pan - but only if not snapped to now
+        // (when snapped, follow mode stays active until escape)
+        if (!this.snappedToNow) {
+            this.stopFollowNow();
+        }
+
         // Convert pixel delta to time delta
         this.state.centerTime -= deltaX / this.state.pixelsPerMs;
+
+        // Apply magnetic snap to now if close (in day view or more zoomed)
+        this.applySnapToNow(deltaX);
+
         this.updateDerived();
     }
 
@@ -404,6 +422,215 @@ export class ViewportController {
         if (msPerPixel < 10 * YEAR) return 8; // < 10 years/px
         if (msPerPixel < 25 * YEAR) return 9; // < 25 years/px
         return 10; // century view
+    }
+
+    // =========================================================================
+    // FOLLOW-NOW MODE
+    // =========================================================================
+
+    /** Whether the viewport is locked to follow current time */
+    private followingNow = false;
+
+    /** Callbacks for follow-now state changes */
+    private followNowListeners: ((following: boolean) => void)[] = [];
+
+    /** Start following current time (centers viewport on "now" each frame) */
+    startFollowNow(): void {
+        this.followingNow = true;
+        this.state.centerTime = Date.now();
+        this.updateDerived();
+        this.notifyFollowListeners();
+    }
+
+    /** Stop following current time */
+    stopFollowNow(): void {
+        if (this.followingNow) {
+            this.followingNow = false;
+            this.notifyFollowListeners();
+        }
+    }
+
+    /** Toggle follow-now mode */
+    toggleFollowNow(): void {
+        if (this.followingNow) {
+            this.stopFollowNow();
+        } else {
+            this.startFollowNow();
+        }
+    }
+
+    /** Check if currently following now */
+    isFollowingNow(): boolean {
+        return this.followingNow;
+    }
+
+    /** 
+     * Update viewport to current time if following.
+     * Should be called each frame from render loop.
+     */
+    updateFollowNow(): void {
+        if (this.followingNow) {
+            this.state.centerTime = Date.now();
+            this.updateDerived();
+        }
+    }
+
+    /** Subscribe to follow-now state changes */
+    subscribeFollowNow(callback: (following: boolean) => void): () => void {
+        this.followNowListeners.push(callback);
+        callback(this.followingNow); // Immediate callback with current state
+        return () => {
+            this.followNowListeners = this.followNowListeners.filter(l => l !== callback);
+        };
+    }
+
+    private notifyFollowListeners(): void {
+        for (const listener of this.followNowListeners) {
+            listener(this.followingNow);
+        }
+    }
+
+    // =========================================================================
+    // SNAP-TO-NOW (Magnetic pull when close to current time in day view)
+    // =========================================================================
+
+    /** Pixel distance threshold for snap activation */
+    private static readonly SNAP_PIXEL_THRESHOLD = 100;
+
+    /** Cumulative drag distance needed to escape snap */
+    private static readonly SNAP_ESCAPE_DISTANCE = 80;
+
+    /** Minimum pixelsPerMs to enable snap (day view or more zoomed) */
+    private static readonly SNAP_ZOOM_THRESHOLD = 1e-5;
+
+    /** Whether snap feature is enabled (user can toggle) */
+    private snapEnabled = true;
+
+    /** Whether viewport is currently snapped to now */
+    private snappedToNow = false;
+
+    /** Cumulative drag distance while snapped (for escape detection) */
+    private snapDragAccumulator = 0;
+
+    /** Timestamp when snap was last escaped (for cooldown) */
+    private snapEscapeTime = 0;
+
+    /** Cooldown period after escape before re-snap is allowed (ms) */
+    private static readonly SNAP_COOLDOWN_MS = 500;
+
+    /** Callbacks for snap state changes */
+    private snapListeners: ((snapped: boolean) => void)[] = [];
+
+    /** Callbacks for snap enabled changes */
+    private snapEnabledListeners: ((enabled: boolean) => void)[] = [];
+
+    /** Toggle snap feature on/off */
+    toggleSnapEnabled(): void {
+        this.snapEnabled = !this.snapEnabled;
+        // If disabling while snapped, unsnap
+        if (!this.snapEnabled && this.snappedToNow) {
+            this.snappedToNow = false;
+            this.notifySnapListeners();
+        }
+        this.notifySnapEnabledListeners();
+    }
+
+    /** Check if snap feature is enabled */
+    isSnapEnabled(): boolean {
+        return this.snapEnabled;
+    }
+
+    /** Subscribe to snap enabled state changes */
+    subscribeSnapEnabled(callback: (enabled: boolean) => void): () => void {
+        this.snapEnabledListeners.push(callback);
+        callback(this.snapEnabled);
+        return () => {
+            this.snapEnabledListeners = this.snapEnabledListeners.filter(l => l !== callback);
+        };
+    }
+
+    private notifySnapEnabledListeners(): void {
+        for (const listener of this.snapEnabledListeners) {
+            listener(this.snapEnabled);
+        }
+    }
+
+    /**
+     * Apply magnetic snap-to-now effect.
+     * Called after panning to gently pull toward current time if close.
+     * @param deltaX - The pan delta in pixels (for tracking escape distance)
+     */
+    private applySnapToNow(deltaX: number): void {
+        // Skip if snap feature is disabled
+        if (!this.snapEnabled) {
+            if (this.snappedToNow) {
+                this.snappedToNow = false;
+                this.notifySnapListeners();
+            }
+            return;
+        }
+
+        // Only snap in day view or more zoomed in
+        if (this.state.pixelsPerMs < ViewportController.SNAP_ZOOM_THRESHOLD) {
+            if (this.snappedToNow) {
+                this.snappedToNow = false;
+                this.snapDragAccumulator = 0;
+                this.notifySnapListeners();
+            }
+            return;
+        }
+
+        const now = Date.now();
+        const distanceMs = Math.abs(this.state.centerTime - now);
+        const distancePixels = distanceMs * this.state.pixelsPerMs;
+
+        if (this.snappedToNow) {
+            // Already snapped - track cumulative drag for escape
+            this.snapDragAccumulator += Math.abs(deltaX);
+
+            if (this.snapDragAccumulator >= ViewportController.SNAP_ESCAPE_DISTANCE) {
+                // User has dragged enough to escape
+                this.snappedToNow = false;
+                this.snapDragAccumulator = 0;
+                this.snapEscapeTime = now; // Record escape time for cooldown
+                this.stopFollowNow(); // Also stop following when escaping snap
+                this.notifySnapListeners();
+            } else {
+                // Still snapped - pull back to now
+                this.state.centerTime = now;
+            }
+        } else if (distancePixels < ViewportController.SNAP_PIXEL_THRESHOLD) {
+            // Not snapped but close - check cooldown before re-snapping
+            const timeSinceEscape = now - this.snapEscapeTime;
+            if (timeSinceEscape > ViewportController.SNAP_COOLDOWN_MS) {
+                // Cooldown passed, ok to snap
+                this.state.centerTime = now;
+                this.snappedToNow = true;
+                this.snapDragAccumulator = 0;
+                this.startFollowNow(); // Also start following when snapping
+                this.notifySnapListeners();
+            }
+        }
+    }
+
+    /** Check if currently snapped to now */
+    isSnappedToNow(): boolean {
+        return this.snappedToNow;
+    }
+
+    /** Subscribe to snap state changes */
+    subscribeSnap(callback: (snapped: boolean) => void): () => void {
+        this.snapListeners.push(callback);
+        callback(this.snappedToNow); // Immediate callback with current state
+        return () => {
+            this.snapListeners = this.snapListeners.filter(l => l !== callback);
+        };
+    }
+
+    private notifySnapListeners(): void {
+        for (const listener of this.snapListeners) {
+            listener(this.snappedToNow);
+        }
     }
 }
 

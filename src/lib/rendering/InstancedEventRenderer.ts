@@ -138,24 +138,26 @@ export class InstancedEventRenderer {
     /**
      * Update the instance buffer with event data.
      * This packs all events into a single Float32Array for GPU upload.
+     * @param laneCount - Fixed number of lanes for consistent height calculation
      */
-    private updateInstanceBuffer(events: RenderableEvent[], viewport: ViewportState): void {
+    private updateInstanceBuffer(events: RenderableEvent[], viewport: ViewportState, laneCount: number): void {
         const dpr = this.ctx.getDevicePixelRatio();
         const canvasWidth = this.ctx.canvas.width;
         const canvasHeight = this.ctx.canvas.height;
 
         // Lane layout constants (must match Calendar.svelte)
-        const NUM_LANES = 4;
-        const LANE_AREA_TOP = 0.10;
-        const LANE_AREA_BOTTOM = 0.98;
-        const LANE_GAP = 0.01;
-        const TOTAL_LANE_AREA = LANE_AREA_BOTTOM - LANE_AREA_TOP - (LANE_GAP * (NUM_LANES - 1));
-        const LANE_HEIGHT_RATIO = TOTAL_LANE_AREA / NUM_LANES;
+        const LANE_AREA_TOP = 0.12;
+        const LANE_AREA_BOTTOM = 0.95;
+        const LANE_GAP = 0.015;
 
-        // Event fills from separator to separator
-        const LANE_HEIGHT_PX = LANE_HEIGHT_RATIO * canvasHeight;
-        const GAP_PX = LANE_GAP * canvasHeight;
-        const EVENT_HEIGHT = LANE_HEIGHT_PX + GAP_PX;
+        // Use fixed lane count for stable heights
+        const numLanes = Math.max(1, laneCount);
+        const totalLaneArea = LANE_AREA_BOTTOM - LANE_AREA_TOP - (LANE_GAP * (numLanes - 1));
+        const laneHeightRatio = totalLaneArea / numLanes;
+
+        // Event height fills from separator to separator (laneHeight + LANE_GAP)
+        // This matches the Y center calculation in Calendar.svelte
+        const LANE_HEIGHT_PX = (laneHeightRatio + LANE_GAP) * canvasHeight;
         const MIN_LINE_WIDTH = 1 * dpr;
 
         let instanceIndex = 0;
@@ -179,7 +181,7 @@ export class InstancedEventRenderer {
             this.instanceData[offset + 0] = centerX;
             this.instanceData[offset + 1] = centerY;
             this.instanceData[offset + 2] = eventWidth;
-            this.instanceData[offset + 3] = EVENT_HEIGHT;
+            this.instanceData[offset + 3] = LANE_HEIGHT_PX;
             this.instanceData[offset + 4] = event.colorR;
             this.instanceData[offset + 5] = event.colorG;
             this.instanceData[offset + 6] = event.colorB;
@@ -193,14 +195,15 @@ export class InstancedEventRenderer {
 
     /**
      * Render all events with a SINGLE draw call using GPU instancing.
+     * @param laneCount - Fixed number of lanes for consistent height calculation
      */
-    render(events: RenderableEvent[], viewport: ViewportState): void {
+    render(events: RenderableEvent[], viewport: ViewportState, laneCount: number = 8): void {
         if (events.length === 0) return;
 
         const gl = this.ctx.gl;
 
         // Update instance buffer with current event data
-        this.updateInstanceBuffer(events, viewport);
+        this.updateInstanceBuffer(events, viewport, laneCount);
 
         gl.useProgram(this.program);
         gl.bindVertexArray(this.vao);

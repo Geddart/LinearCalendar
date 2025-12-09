@@ -33,6 +33,7 @@ export interface ContextLabels {
     month: string;
     dayNum: string;
     weekday: string;
+    time: string;
 }
 
 export interface TimeGridResult {
@@ -150,6 +151,12 @@ export function calculateTimeGrid(config: TimeGridConfig): TimeGridResult {
         month: `${centerDate.toLocaleString("en-US", { month: "long" })} ${centerDate.getDate()}`,
         dayNum: "",
         weekday: centerDate.toLocaleString("en-US", { weekday: "long" }),
+        time: centerDate.toLocaleTimeString("en-US", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false
+        }),
     };
 
     const gridLines: GridLine[] = [];

@@ -7,7 +7,6 @@
 
 import { writable, type Writable } from 'svelte/store';
 import type { CalendarEvent, ViewportState } from '$lib/types/Event';
-import { DEFAULT_LANES } from '$lib/types/Event';
 
 /**
  * Currently selected event (clicked)
@@ -20,14 +19,11 @@ export const selectedEvent: Writable<CalendarEvent | null> = writable(null);
 export const hoveredEvent: Writable<CalendarEvent | null> = writable(null);
 
 /**
- * Lane layout constants (must match Calendar.svelte and SimpleEventRenderer.ts)
+ * Lane layout constants (must match Calendar.svelte)
  */
-const LANE_AREA_TOP = 0.10;
-const LANE_AREA_BOTTOM = 0.98;
-const LANE_GAP = 0.01;
-const NUM_LANES = DEFAULT_LANES.length;
-const TOTAL_LANE_AREA = LANE_AREA_BOTTOM - LANE_AREA_TOP - (LANE_GAP * (NUM_LANES - 1));
-const LANE_HEIGHT = TOTAL_LANE_AREA / NUM_LANES;
+const LANE_AREA_TOP = 0.12;
+const LANE_AREA_BOTTOM = 0.95;
+const LANE_GAP = 0.015;
 
 /**
  * Hit test to find event at screen coordinates.
@@ -36,9 +32,10 @@ const LANE_HEIGHT = TOTAL_LANE_AREA / NUM_LANES;
  * @param screenY - Y coordinate in screen pixels (relative to canvas)
  * @param viewport - Current viewport state
  * @param events - Array of events to test
- * @param eventLanes - Map of event ID to lane order
+ * @param getLane - Function to get lane order for an event
  * @param canvasWidth - Canvas width in pixels
  * @param canvasHeight - Canvas height in pixels
+ * @param laneCount - Number of lanes (for dynamic lane calculation)
  * @returns The event at the coordinates, or null if none
  */
 export function hitTest(
@@ -46,18 +43,24 @@ export function hitTest(
     screenY: number,
     viewport: ViewportState,
     events: CalendarEvent[],
-    eventLanes: Map<string, number>,
+    getLane: (event: CalendarEvent) => number,
     canvasWidth: number,
-    canvasHeight: number
+    canvasHeight: number,
+    laneCount: number = 8
 ): CalendarEvent | null {
     // Convert screen Y to normalized Y (0 = top, 1 = bottom)
     const normalizedY = screenY / canvasHeight;
 
+    // Calculate lane height dynamically
+    const numLanes = Math.max(1, laneCount);
+    const totalLaneArea = LANE_AREA_BOTTOM - LANE_AREA_TOP - (LANE_GAP * (numLanes - 1));
+    const laneHeight = totalLaneArea / numLanes;
+
     // Find which lane this Y is in
     let hitLaneOrder = -1;
-    for (let i = 0; i < NUM_LANES; i++) {
-        const laneTop = LANE_AREA_TOP + i * (LANE_HEIGHT + LANE_GAP);
-        const laneBottom = laneTop + LANE_HEIGHT + LANE_GAP;
+    for (let i = 0; i < numLanes; i++) {
+        const laneTop = LANE_AREA_TOP + i * (laneHeight + LANE_GAP);
+        const laneBottom = laneTop + laneHeight + LANE_GAP;
         if (normalizedY >= laneTop && normalizedY < laneBottom) {
             hitLaneOrder = i;
             break;
@@ -76,7 +79,7 @@ export function hitTest(
     // Find events that match this time and lane
     // Return the first (most important) match
     for (const event of events) {
-        const eventLane = eventLanes.get(event.id) ?? 0;
+        const eventLane = getLane(event);
 
         // Check if lane matches
         if (eventLane !== hitLaneOrder) continue;

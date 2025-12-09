@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from "svelte";
+	import { onMount, tick } from "svelte";
 	import { WebGLContext } from "$lib/rendering/WebGLContext";
 	import { InstancedEventRenderer } from "$lib/rendering/InstancedEventRenderer";
 	import { viewportController } from "$lib/viewport/ViewportController";
@@ -25,11 +25,33 @@
 	import Toast from "./Toast.svelte";
 	import { hitTest, selectEvent } from "$lib/events/EventInteraction";
 	import { eventStore } from "$lib/events/EventStore";
+	import GoogleConnectButton from "./GoogleConnectButton.svelte";
+	import CalendarSelector from "./CalendarSelector.svelte";
+	import {
+		authStore,
+		loadAuthState,
+		saveAuthState,
+	} from "$lib/stores/authStore";
+	import { googleProvider } from "$lib/api/GoogleCalendarProvider";
+	import type { CalendarInfo } from "$lib/api/CalendarProvider";
+	import { calendarStore, activeCalendars } from "$lib/stores/calendarStore";
+	import { generateHistoricalEvents } from "$lib/api/HistoricalEvents";
+	import { locationStore } from "$lib/stores/locationStore";
+	import { DayNightWebGLRenderer } from "$lib/rendering/DayNightWebGLRenderer";
+	import { SeasonsWebGLRenderer } from "$lib/rendering/SeasonsWebGLRenderer";
+	import LocationSettings from "./LocationSettings.svelte";
+	import { eventLoader } from "$lib/api/EventLoader";
+	import {
+		eventLoadingStore,
+		isLoadingEvents as loadingEventsStore,
+	} from "$lib/stores/eventLoadingStore";
 
 	let canvas: HTMLCanvasElement;
 	let ctx: WebGLContext;
 	let renderer: InstancedEventRenderer;
 	let inputHandler: InputHandler;
+	let dayNightRenderer: DayNightWebGLRenderer;
+	let seasonsRenderer: SeasonsWebGLRenderer;
 	let frameId: number;
 
 	// Event data with pre-computed lanes
@@ -61,6 +83,18 @@
 	// Mobile detection
 	let isMobile = false;
 
+	// Loading indicator for initial calendar list fetch
+	let isLoadingCalendarList = false;
+
+	// Combined loading state: calendar list fetch OR lazy event loading
+	$: isLoadingEvents = isLoadingCalendarList || $loadingEventsStore;
+
+	// Now indicator state
+	let nowTime = Date.now();
+	let isFollowingNow = false;
+	let isSnappedToNow = false;
+	let isSnapEnabled = true;
+
 	// DEBUG: Track last centerTime to only log when panning
 	let debugLastCenterTime = 0;
 
@@ -77,7 +111,13 @@
 
 	// Time grid state - now using imported GridLine type
 	let gridLines: GridLine[] = [];
-	let contextLabels = { year: "", month: "", dayNum: "", weekday: "" };
+	let contextLabels = {
+		year: "",
+		month: "",
+		dayNum: "",
+		weekday: "",
+		time: "",
+	};
 
 	// Memoization cache for updateTimeGrid (prevent recalculating every frame)
 	let lastGridConfig = {
@@ -97,19 +137,132 @@
 	let showMonth = false;
 	let showDay = false;
 
+	// Google Calendar integration state
+	let showCalendarSelector = false;
+	let showLocationSettings = false;
+
+	// Day/night overlay uses WebGL rendering (no state needed here)
+	let googleCalendars: CalendarInfo[] = [];
+
+	/**
+	 * Open calendar settings modal and fetch available calendars
+	 */
+	async function openCalendarSettings() {
+		try {
+			const result = await googleProvider.getCalendars();
+			if (!result.error) {
+				googleCalendars = result.data;
+			}
+		} catch (err) {
+			console.error("Failed to fetch calendars:", err);
+		}
+		showCalendarSelector = true;
+	}
+
+	/**
+	 * Handle calendar selection save - reload events from selected calendars
+	 */
+	async function handleCalendarsSave() {
+		showToast("Calendars updated");
+		// Events will be reloaded via calendarStore subscription
+	}
+
+	/**
+	 * Load events from Google calendars and historical events
+	 *
+	 * Note: Google Calendar events are now loaded lazily via EventLoader
+	 * based on viewport position. This function only handles:
+	 * - Historical events (loaded immediately if enabled)
+	 * - Setting up the EventLoader with calendar info
+	 */
+	async function loadEventsFromCalendars(state: {
+		selected: Set<string>;
+		visible: Set<string>;
+		showHistorical: boolean;
+	}) {
+		const allEvents: CalendarEvent[] = [];
+
+		// Load historical events if enabled (these are static, load all at once)
+		if (state.showHistorical) {
+			const historical = generateHistoricalEvents();
+			allEvents.push(...historical);
+		}
+
+		// Clear event store and add historical events
+		eventStore.clear();
+		eventLoader.clearCache();
+
+		if (allEvents.length > 0) {
+			eventStore.addEvents(allEvents);
+		}
+
+		// Set up EventLoader with visible calendars for lazy loading
+		if ($authStore.isConnected && state.selected.size > 0) {
+			const visibleCalendars = googleCalendars.filter(
+				(c) => state.selected.has(c.id) && state.visible.has(c.id),
+			);
+			eventLoader.setCalendars(visibleCalendars);
+
+			// Trigger initial load for current viewport
+			if (viewport) {
+				eventLoader.updateViewport(
+					viewport.startTime,
+					viewport.endTime,
+				);
+			}
+		}
+
+		// Update local events array for lane computation
+		events = allEvents;
+
+		// Recompute lane assignments
+		computeLaneAssignments();
+	}
+
+	// Dynamic lane calculation based on visible calendars
+	// Include color for each lane
+	$: visibleCalendarList = $calendarStore.showHistorical
+		? [
+				{ id: "historical", name: "Historical", color: "#4285f4" },
+				...googleCalendars.filter((c) =>
+					$calendarStore.visible.has(c.id),
+				),
+			]
+		: googleCalendars.filter((c) => $calendarStore.visible.has(c.id));
+
+	$: laneCount = Math.max(1, visibleCalendarList.length);
+
+	/**
+	 * Get the color for an event based on its category (calendar ID)
+	 */
+	function getEventColor(event: CalendarEvent): string {
+		// Use the event's own color if set
+		if (event.color) return event.color;
+
+		// Find the calendar's color
+		const calendar = visibleCalendarList.find(
+			(c) => c.id === event.category,
+		);
+		if (calendar?.color) return calendar.color;
+
+		// Default colors by category
+		if (event.category === "historical") return "#4285f4";
+
+		return "#888888";
+	}
+
 	// Layout constants
 	const CONTEXT_COL_WIDTH = 130;
 
-	// Lane layout - events organized by calendar (from DEFAULT_LANES)
-	// Lanes are compact with small gaps between them
-	const LANE_AREA_TOP = 0.1; // Leave space for grid labels at top
-	const LANE_AREA_BOTTOM = 0.98; // Use more vertical space
-	const LANE_GAP = 0.01; // Small gap between lanes for visual separation
-	const TOTAL_LANE_AREA =
-		LANE_AREA_BOTTOM -
-		LANE_AREA_TOP -
-		LANE_GAP * (DEFAULT_LANES.length - 1);
-	const LANE_HEIGHT = TOTAL_LANE_AREA / DEFAULT_LANES.length;
+	// Lane layout - events organized by calendar (dynamic)
+	const LANE_AREA_TOP = 0.12; // Padding at top
+	const LANE_AREA_BOTTOM = 0.95; // Padding at bottom
+	const LANE_GAP = 0.015; // Gap between lanes
+
+	// Reactive lane height based on number of visible calendars
+	$: totalLaneArea =
+		LANE_AREA_BOTTOM - LANE_AREA_TOP - LANE_GAP * (laneCount - 1);
+	$: laneHeight = laneCount > 0 ? totalLaneArea / laneCount : 0.2;
 
 	onMount(() => {
 		unsubscribe = viewportController.subscribe((state) => {
@@ -118,6 +271,8 @@
 
 		ctx = new WebGLContext(canvas);
 		renderer = new InstancedEventRenderer(ctx);
+		dayNightRenderer = new DayNightWebGLRenderer(ctx);
+		seasonsRenderer = new SeasonsWebGLRenderer(ctx);
 
 		viewportController.setCanvas(canvas);
 		ctx.resize();
@@ -137,16 +292,79 @@
 				navigator.userAgent,
 			) || window.matchMedia("(max-width: 768px)").matches;
 
-		// Generate events and add to EventStore for O(log n) queries
-		events = [
-			...generateLifeEvents(),
-			...generateMockEvents(100),
-			...generateTodayEvents(),
-		];
-		eventStore.addEvents(events);
+		// Load calendar store state
+		calendarStore.load();
 
-		// Pre-compute lane assignments ONCE - this prevents jumping
-		computeLaneAssignments();
+		// Load location store state
+		locationStore.load();
+
+		// Track if we've already loaded calendars to prevent duplicate fetches
+		let hasLoadedCalendars = false;
+
+		// Subscribe to auth changes - load calendars when connected
+		const authUnsub = authStore.subscribe(async (auth) => {
+			if (auth.isConnected && !hasLoadedCalendars) {
+				hasLoadedCalendars = true;
+				isLoadingCalendarList = true;
+				try {
+					// Fetch calendar list
+					const result = await googleProvider.getCalendars();
+					if (!result.error && result.data) {
+						googleCalendars = result.data;
+						calendarStore.setAvailable(result.data);
+
+						// If has saved selections, load those; otherwise select primary
+						if ($calendarStore.selected.size === 0) {
+							const primary = result.data.find(
+								(c) => c.isPrimary,
+							);
+							if (primary) {
+								calendarStore.setSelected([primary.id]);
+							}
+						}
+					}
+				} catch (err) {
+					console.error("Failed to load calendars:", err);
+				}
+				isLoadingCalendarList = false;
+			}
+		});
+
+		// Subscribe to calendar changes and load events
+		const calendarUnsub = calendarStore.subscribe((state) => {
+			if (state.selected.size > 0 || state.showHistorical) {
+				loadEventsFromCalendars(state);
+			}
+		});
+
+		// Subscribe to follow-now state changes
+		const followNowUnsub = viewportController.subscribeFollowNow(
+			(following) => {
+				isFollowingNow = following;
+			},
+		);
+
+		// Subscribe to snap-to-now state changes
+		const snapUnsub = viewportController.subscribeSnap((snapped) => {
+			isSnappedToNow = snapped;
+		});
+
+		// Subscribe to snap enabled state changes
+		const snapEnabledUnsub = viewportController.subscribeSnapEnabled(
+			(enabled) => {
+				isSnapEnabled = enabled;
+			},
+		);
+
+		// Subscribe to viewport changes for lazy loading events
+		const viewportUnsub = viewportController.subscribe((state) => {
+			// Trigger lazy loading when viewport changes
+			if (state.startTime && state.endTime) {
+				eventLoader.updateViewport(state.startTime, state.endTime);
+			}
+		});
+
+		// Pre-compute lane assignments (will be called by loadEventsFromCalendars)
 
 		const handleResize = () => {
 			if (ctx.resize()) {
@@ -176,23 +394,69 @@
 			cancelAnimationFrame(frameId);
 			inputHandler?.destroy();
 			unsubscribe?.();
+			authUnsub?.();
+			calendarUnsub?.();
+			followNowUnsub?.();
+			snapUnsub?.();
+			snapEnabledUnsub?.();
+			viewportUnsub?.();
 		};
 	});
 
 	/**
-	 * Compute lane assignments for all events ONCE at startup.
-	 * Now uses calendar-based lanes instead of greedy algorithm.
-	 * Events are assigned to lanes based on their calendarLaneId.
+	 * Compute lane assignments for all events.
+	 * Uses calendar-based lanes - each calendar gets its own horizontal lane.
 	 */
 	function computeLaneAssignments() {
+		eventLanes.clear();
+
+		// Build a map from calendar ID to lane index
+		const calendarToLane = new Map<string, number>();
+		visibleCalendarList.forEach((cal, index) => {
+			calendarToLane.set(cal.id, index);
+		});
+
 		for (const event of events) {
-			// Find the lane for this event based on its calendarLaneId
-			const lane = DEFAULT_LANES.find(
-				(l) => l.id === event.calendarLaneId,
-			);
-			const laneOrder = lane ? lane.order : 0; // Default to first lane if not found
-			eventLanes.set(event.id, laneOrder);
+			// Determine which lane this event belongs to
+			let laneIndex = 0;
+
+			if (event.category === "historical") {
+				// Historical events go to the historical lane
+				laneIndex = calendarToLane.get("historical") ?? 0;
+			} else if (event.category) {
+				// Google events use their calendar ID as category
+				laneIndex = calendarToLane.get(event.category) ?? 0;
+			}
+
+			eventLanes.set(event.id, laneIndex);
 		}
+	}
+
+	/**
+	 * Get the lane index for an event.
+	 * Computes on-the-fly for lazy-loaded events that don't have a pre-computed lane.
+	 */
+	function getLaneForEvent(event: CalendarEvent): number {
+		// Check if we have a pre-computed lane
+		const cachedLane = eventLanes.get(event.id);
+		if (cachedLane !== undefined) {
+			return cachedLane;
+		}
+
+		// Compute lane on-the-fly for lazy-loaded events
+		if (event.category === "historical") {
+			const idx = visibleCalendarList.findIndex(
+				(c) => c.id === "historical",
+			);
+			return idx >= 0 ? idx : 0;
+		} else if (event.category) {
+			const idx = visibleCalendarList.findIndex(
+				(c) => c.id === event.category,
+			);
+			return idx >= 0 ? idx : 0;
+		}
+
+		return 0;
 	}
 
 	function render() {
@@ -202,6 +466,12 @@
 		if (ctx.resize()) {
 			viewportController.resize(canvas.clientWidth, canvas.clientHeight);
 		}
+
+		// Update "now" time each frame for the now indicator
+		nowTime = Date.now();
+
+		// Update viewport if following "now" mode
+		viewportController.updateFollowNow();
 
 		// Track FPS
 		const now = performance.now();
@@ -246,8 +516,18 @@
 
 		updateTimeGrid();
 
+		// Render seasons overlay (visible at Year view and more zoomed out)
+		seasonsRenderer.render(viewport, $locationStore.latitude);
+
+		// Render day/night overlay (visible at Day view and more zoomed in)
+		dayNightRenderer.render(
+			viewport,
+			$locationStore.latitude,
+			$locationStore.longitude,
+		);
+
 		const visibleEvents = getVisibleEvents();
-		renderer.render(visibleEvents, viewport);
+		renderer.render(visibleEvents, viewport, laneCount);
 
 		// Update lightweight debug stats (these are cheap, can run every frame)
 		debugStats.objectsDrawn = visibleEvents.length;
@@ -357,20 +637,19 @@
 		);
 
 		cachedVisibleEvents = filtered.map((e) => {
-			// Use pre-computed lane order from calendar-based assignment
-			const laneOrder = eventLanes.get(e.id) ?? 0;
+			// Get lane for event (computes on-the-fly for lazy-loaded events)
+			const laneOrder = getLaneForEvent(e);
 
-			// Get the lane definition to use its color
-			const lane = DEFAULT_LANES[laneOrder] || DEFAULT_LANES[0];
-			const rgb = hexToRgb(lane.color);
+			// Get the calendar's color for this event
+			const calendarColor = getEventColor(e);
+			const rgb = hexToRgb(calendarColor);
 
 			// Calculate Y position based on lane layout (with gaps)
-			// Lanes are positioned from top to bottom based on DEFAULT_LANES order
-			// Center is at middle of (LANE_HEIGHT + LANE_GAP) span so events fill separator to separator
+			// Center is at middle of (laneHeight + LANE_GAP) span so events fill separator to separator
 			const laneY =
 				LANE_AREA_TOP +
-				laneOrder * (LANE_HEIGHT + LANE_GAP) +
-				(LANE_HEIGHT + LANE_GAP) / 2;
+				laneOrder * (laneHeight + LANE_GAP) +
+				(laneHeight + LANE_GAP) / 2;
 
 			return {
 				id: parseInt(e.id.replace(/\D/g, "")) || 0,
@@ -392,6 +671,62 @@
 
 	// Reactive layout offset - always 0 since context column is now a floating card
 	$: contextOffset = 0;
+
+	// Helper to format time as hh:mm:ss
+	function formatTimeHHMMSS(timestamp: number): string {
+		return new Date(timestamp).toLocaleTimeString("en-US", {
+			hour: "2-digit",
+			minute: "2-digit",
+			second: "2-digit",
+			hour12: false,
+		});
+	}
+
+	// Display time: use real-time nowTime when following, otherwise use context label time
+	$: displayTime = isFollowingNow
+		? formatTimeHHMMSS(nowTime)
+		: contextLabels.time;
+
+	// Get all visible events from the store for UI (labels, hit testing)
+	// This includes both historical events and lazy-loaded events
+	$: visibleEventsForUI = viewport
+		? eventStore.queryRange(viewport.startTime, viewport.endTime)
+		: [];
+
+	// Compute which events should show labels (filter overlapping events in same lane)
+	// Only the first event in each overlapping group shows a label
+	$: labelsToShow = (() => {
+		const showLabel = new Set<string>();
+		// Group events by lane
+		const laneEvents = new Map<number, CalendarEvent[]>();
+		for (const event of visibleEventsForUI) {
+			const lane = getLaneForEvent(event);
+			if (!laneEvents.has(lane)) laneEvents.set(lane, []);
+			laneEvents.get(lane)!.push(event);
+		}
+		// For each lane, find overlapping groups and only show first label
+		for (const [_, laneEvts] of laneEvents) {
+			// Sort by start time
+			const sorted = [...laneEvts].sort(
+				(a, b) => a.startTime - b.startTime,
+			);
+			// Track occupied time ranges
+			const occupied: { start: number; end: number }[] = [];
+			for (const evt of sorted) {
+				// Check if this event overlaps with any occupied range
+				const overlaps = occupied.some(
+					(r) => evt.startTime < r.end && evt.endTime > r.start,
+				);
+				if (!overlaps) {
+					// No overlap, show this label and mark its range as occupied
+					showLabel.add(evt.id);
+					occupied.push({ start: evt.startTime, end: evt.endTime });
+				}
+				// If overlaps, skip showing label for this event
+			}
+		}
+		return showLabel;
+	})();
 
 	function getImportanceThreshold(lodLevel: number): number {
 		return Math.pow(lodLevel / 10, 2);
@@ -434,10 +769,11 @@
 			x,
 			y,
 			viewport,
-			events,
-			eventLanes,
+			visibleEventsForUI,
+			getLaneForEvent,
 			canvas.clientWidth,
 			canvas.clientHeight,
+			laneCount,
 		);
 
 		selectEvent(event);
@@ -476,23 +812,90 @@
 		{/each}
 	</div>
 
+	<!-- Day/night overlay is now rendered in WebGL -->
+
 	<!-- Lane separators with labels -->
 	<div
 		class="lane-overlay"
 		style="left: {isMobile ? 0 : CONTEXT_COL_WIDTH}px;"
 	>
-		{#each DEFAULT_LANES as lane, i}
+		{#each visibleCalendarList as cal, i}
 			<div
 				class="lane-separator"
-				style="top: {(LANE_AREA_TOP + i * (LANE_HEIGHT + LANE_GAP)) *
+				style="top: {(LANE_AREA_TOP + i * (laneHeight + LANE_GAP)) *
 					100}%"
 			>
-				<span class="lane-label" style="color: {lane.color}"
-					>{lane.name}</span
+				<span class="lane-label" style="color: {cal.color || '#888'}"
+					>{cal.name}</span
 				>
 			</div>
 		{/each}
 	</div>
+
+	<!-- Event labels overlay (HTML text on top of WebGL events) -->
+	{#if viewport}
+		<div
+			class="event-labels-overlay"
+			style="left: {isMobile ? 0 : CONTEXT_COL_WIDTH}px;"
+		>
+			{#each visibleEventsForUI as event (event.id)}
+				{@const isVisible =
+					event.startTime < viewport.endTime &&
+					event.endTime > viewport.startTime}
+				{@const pixelWidth =
+					(event.endTime - event.startTime) * viewport.pixelsPerMs}
+				{@const labelOpacity = Math.min(
+					1,
+					Math.max(0, (pixelWidth - 40) / 60),
+				)}
+				{@const overlayOffset = isMobile ? 0 : CONTEXT_COL_WIDTH}
+				{@const overlayWidth = viewport.width - overlayOffset}
+				{@const eventStartX =
+					(event.startTime - viewport.startTime) *
+						viewport.pixelsPerMs -
+					overlayOffset}
+				{@const eventEndX =
+					(event.endTime - viewport.startTime) *
+						viewport.pixelsPerMs -
+					overlayOffset}
+				{@const laneOrder = getLaneForEvent(event)}
+				{@const eventY =
+					LANE_AREA_TOP +
+					laneOrder * (laneHeight + LANE_GAP) +
+					laneHeight / 2}
+				{@const labelLeft = Math.max(0, eventStartX) + 4}
+				{@const labelRight = Math.min(eventEndX, overlayWidth) - 4}
+				{@const labelWidth = Math.max(0, labelRight - labelLeft)}
+				{@const canShowLabel =
+					labelsToShow.has(event.id) &&
+					eventStartX >= 0 &&
+					labelWidth > 40}
+				{#if isVisible && pixelWidth > 5}
+					<!-- svelte-ignore a11y-click-events-have-key-events -->
+					<!-- svelte-ignore a11y-no-static-element-interactions -->
+					<div
+						class="event-label"
+						class:has-text={canShowLabel && labelOpacity > 0.1}
+						style="
+							left: {labelLeft}px;
+							top: {eventY * 100}%;
+							width: {labelWidth}px;
+						"
+						on:click|stopPropagation={() => selectEvent(event)}
+					>
+						{#if canShowLabel && labelOpacity > 0.05}
+							<span
+								class="event-title"
+								style="opacity: {labelOpacity};"
+							>
+								{event.title}
+							</span>
+						{/if}
+					</div>
+				{/if}
+			{/each}
+		</div>
+	{/if}
 
 	<!-- Context column (sticky left) - always show full date -->
 	<div class="context-column" style="width: {CONTEXT_COL_WIDTH}px;">
@@ -500,6 +903,13 @@
 		<div class="context-month">{contextLabels.month}</div>
 		<div class="context-day-num">{contextLabels.dayNum}</div>
 		<div class="context-weekday">{contextLabels.weekday}</div>
+		<div class="context-time">{displayTime}</div>
+
+		{#if isSnappedToNow}
+			<div class="snap-indicator" title="Locked to current time">🔒</div>
+		{/if}
+
+		<GoogleConnectButton on:settingsClick={openCalendarSettings} />
 
 		<button
 			class="today-button"
@@ -507,10 +917,55 @@
 		>
 			Today
 		</button>
+
+		<button
+			class="follow-now-button"
+			class:active={isFollowingNow}
+			on:click={() => viewportController.toggleFollowNow()}
+			title={isFollowingNow
+				? "Stop following time"
+				: "Follow current time"}
+		>
+			🕐
+		</button>
+
+		<button
+			class="location-button"
+			on:click={() => (showLocationSettings = true)}
+			title="Location settings"
+		>
+			📍
+		</button>
+
+		<button
+			class="snap-toggle-button"
+			class:disabled={!isSnapEnabled}
+			class:snapping={isSnappedToNow}
+			on:click={() => viewportController.toggleSnapEnabled()}
+			title={isSnapEnabled ? "Disable snap-to-now" : "Enable snap-to-now"}
+		>
+			🧲
+		</button>
+
+		{#if isLoadingEvents}
+			<div class="loading-indicator">Loading...</div>
+		{/if}
 	</div>
 
 	<!-- Center date indicator (red line) -->
 	<div class="center-line"></div>
+
+	<!-- Now time indicator (blue line) -->
+	{#if viewport}
+		{@const nowX = (nowTime - viewport.startTime) * viewport.pixelsPerMs}
+		{#if nowX >= 0 && nowX <= viewport.width}
+			<div
+				class="now-indicator"
+				class:following={isFollowingNow}
+				style="left: {nowX}px;"
+			></div>
+		{/if}
+	{/if}
 
 	<!-- Debug overlay - Stats for Nerds -->
 	{#if viewport}
@@ -532,6 +987,21 @@
 	{#key toastKey}
 		<Toast message={toastMessage} visible={toastVisible} />
 	{/key}
+
+	<!-- Calendar selector modal -->
+	<CalendarSelector
+		calendars={googleCalendars}
+		visible={showCalendarSelector}
+		on:close={() => (showCalendarSelector = false)}
+		on:save={handleCalendarsSave}
+	/>
+
+	<!-- Location settings modal -->
+	<LocationSettings
+		visible={showLocationSettings}
+		on:close={() => (showLocationSettings = false)}
+		on:save={() => (showLocationSettings = false)}
+	/>
 
 	<!-- Keyboard shortcuts help (desktop only) -->
 	{#if !isMobile}
@@ -649,12 +1119,67 @@
 		background: #ddd;
 	}
 
+	/* Day/night cycle overlay */
+	.day-night-overlay {
+		position: absolute;
+		top: 28px;
+		right: 0;
+		height: 10px;
+		pointer-events: none;
+		overflow: hidden;
+		transition: opacity 0.3s ease;
+	}
+
+	.day-night-segment {
+		position: absolute;
+		top: 0;
+		height: 100%;
+		transition: opacity 0.2s ease;
+	}
+
+	.sun-icon {
+		position: absolute;
+		top: -2px;
+		transform: translateX(-50%);
+		font-size: 10px;
+		pointer-events: none;
+		filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.1));
+	}
+
+	/* Location settings button */
+	.location-button {
+		position: fixed;
+		bottom: 24px;
+		left: 150px;
+		width: 40px;
+		height: 40px;
+		padding: 0;
+		background: rgba(100, 100, 100, 0.9);
+		color: white;
+		border: none;
+		border-radius: 50%;
+		font-size: 18px;
+		cursor: pointer;
+		transition: all 0.2s ease;
+		z-index: 100;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+		pointer-events: auto;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.location-button:hover {
+		background: rgba(80, 80, 80, 0.95);
+		transform: scale(1.05);
+	}
+
 	.grid-label {
 		position: absolute;
 		top: 8px;
 		left: 6px;
 		font-size: 12px; /* Base size - but can be overridden inline */
-		color: #888;
+		color: #555;
 		font-family:
 			"Inter",
 			-apple-system,
@@ -671,7 +1196,7 @@
 
 	.grid-label.major {
 		/* Only color changes for major - size controlled via inline style */
-		color: #333;
+		color: #111;
 	}
 
 	.context-column {
@@ -711,6 +1236,88 @@
 	.context-weekday {
 		font-size: 13px;
 		color: #888;
+	}
+
+	.context-time {
+		font-size: 12px;
+		color: #999;
+		font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
+		margin-top: 2px;
+	}
+
+	/* Snap indicator (lock icon when snapped to now) */
+	.snap-indicator {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		margin-top: 6px;
+		padding: 4px 8px;
+		background: rgba(33, 150, 243, 0.15);
+		border-radius: 4px;
+		font-size: 14px;
+		color: #1976d2;
+		animation: fadeIn 0.2s ease;
+	}
+
+	@keyframes fadeIn {
+		from {
+			opacity: 0;
+			transform: scale(0.9);
+		}
+		to {
+			opacity: 1;
+			transform: scale(1);
+		}
+	}
+
+	/* Snap toggle button (magnet icon) */
+	.snap-toggle-button {
+		position: fixed;
+		bottom: 24px;
+		left: 200px;
+		width: 40px;
+		height: 40px;
+		padding: 0;
+		background: rgba(33, 150, 243, 0.9);
+		color: white;
+		border: none;
+		border-radius: 50%;
+		font-size: 18px;
+		cursor: pointer;
+		transition: all 0.2s ease;
+		z-index: 100;
+		box-shadow: 0 4px 12px rgba(33, 150, 243, 0.3);
+		pointer-events: auto;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.snap-toggle-button:hover {
+		background: rgba(25, 118, 210, 0.95);
+		transform: scale(1.05);
+	}
+
+	.snap-toggle-button.disabled {
+		background: rgba(100, 100, 100, 0.5);
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+		opacity: 0.6;
+	}
+
+	.snap-toggle-button.snapping {
+		animation: snap-blink 0.25s ease-in-out 5;
+	}
+
+	@keyframes snap-blink {
+		0%,
+		100% {
+			background: rgba(33, 150, 243, 0.9);
+			transform: scale(1);
+		}
+		50% {
+			background: rgba(255, 193, 7, 0.95);
+			transform: scale(1.15);
+		}
 	}
 
 	/* Center date indicator line */
@@ -753,6 +1360,88 @@
 
 	.today-button:active {
 		background: #b71c1c;
+	}
+
+	/* Follow-now button (clock icon) - next to Today button */
+	.follow-now-button {
+		position: fixed;
+		bottom: 24px;
+		left: 100px; /* Next to Today button */
+		width: 40px;
+		height: 40px;
+		padding: 0;
+		background: rgba(33, 150, 243, 0.9);
+		color: white;
+		border: none;
+		border-radius: 50%;
+		font-size: 18px;
+		cursor: pointer;
+		transition: all 0.2s ease;
+		z-index: 100;
+		box-shadow: 0 4px 12px rgba(33, 150, 243, 0.3);
+		pointer-events: auto;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.follow-now-button:hover {
+		background: rgba(25, 118, 210, 0.95);
+		transform: scale(1.05);
+	}
+
+	.follow-now-button.active {
+		background: #1565c0;
+		box-shadow: 0 0 20px rgba(33, 150, 243, 0.6);
+		animation: pulse-glow 2s infinite;
+	}
+
+	@keyframes pulse-glow {
+		0%,
+		100% {
+			box-shadow: 0 0 12px rgba(33, 150, 243, 0.4);
+		}
+		50% {
+			box-shadow: 0 0 24px rgba(33, 150, 243, 0.8);
+		}
+	}
+
+	/* Now time indicator line (blue) */
+	.now-indicator {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		width: 2px;
+		background: linear-gradient(180deg, #2196f3 0%, #1976d2 100%);
+		pointer-events: none;
+		z-index: 6;
+		box-shadow: 0 0 8px rgba(33, 150, 243, 0.5);
+	}
+
+	.now-indicator.following {
+		box-shadow: 0 0 16px rgba(33, 150, 243, 0.8);
+	}
+
+	.loading-indicator {
+		margin-top: 12px;
+		padding: 8px 12px;
+		background: rgba(33, 150, 243, 0.1);
+		color: #2196f3;
+		border-radius: 8px;
+		font-size: 12px;
+		font-weight: 500;
+		text-align: center;
+		animation: pulse 1.5s infinite;
+	}
+
+	@keyframes pulse {
+		0%,
+		100% {
+			opacity: 0.6;
+		}
+		50% {
+			opacity: 1;
+		}
 	}
 
 	/* Keyboard shortcuts help box */
@@ -854,5 +1543,44 @@
 			backdrop-filter: blur(8px);
 			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 		}
+	}
+
+	/* Event labels overlay */
+	.event-labels-overlay {
+		position: absolute;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		pointer-events: none;
+		overflow: hidden;
+		will-change: contents;
+	}
+
+	.event-label {
+		position: absolute;
+		transform: translateY(-50%);
+		pointer-events: auto;
+		cursor: pointer;
+		box-sizing: border-box;
+		overflow: hidden;
+		will-change: transform, left;
+	}
+
+	.event-label:hover {
+		z-index: 10;
+	}
+
+	.event-title {
+		display: block;
+		padding: 2px 6px;
+		font-size: 11px;
+		font-weight: 500;
+		color: #fff;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+		line-height: 1.2;
+		transition: opacity 0.1s ease;
 	}
 </style>

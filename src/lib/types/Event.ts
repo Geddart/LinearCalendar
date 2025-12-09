@@ -71,8 +71,8 @@ export interface CalendarEvent {
     /** True for major life events (always shown) */
     isLifeEvent: boolean;
 
-    /** Category for coloring */
-    category?: 'work' | 'personal' | 'health' | 'travel' | 'social' | 'other';
+    /** Category - can be a preset category or a calendar ID for Google events */
+    category?: 'work' | 'personal' | 'health' | 'travel' | 'social' | 'other' | 'historical' | string;
 
     /** Source calendar */
     source: 'mock' | 'google' | 'apple' | 'manual';
