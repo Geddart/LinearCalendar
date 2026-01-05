@@ -25,6 +25,9 @@ const LANE_AREA_TOP = 0.12;
 const LANE_AREA_BOTTOM = 0.95;
 const LANE_GAP = 0.015;
 
+/** Minimum clickable width in pixels for thin events */
+const MIN_HIT_WIDTH_PX = 20;
+
 /**
  * Hit test to find event at screen coordinates.
  * 
@@ -84,8 +87,20 @@ export function hitTest(
         // Check if lane matches
         if (eventLane !== hitLaneOrder) continue;
 
-        // Check if time is within event bounds
-        if (clickTime >= event.startTime && clickTime <= event.endTime) {
+        // Calculate event width in pixels
+        const eventWidthPx = (event.endTime - event.startTime) * viewport.pixelsPerMs;
+
+        // Expand hit area for thin events
+        let hitStartTime = event.startTime;
+        let hitEndTime = event.endTime;
+        if (eventWidthPx < MIN_HIT_WIDTH_PX) {
+            const expandMs = (MIN_HIT_WIDTH_PX - eventWidthPx) / 2 / viewport.pixelsPerMs;
+            hitStartTime -= expandMs;
+            hitEndTime += expandMs;
+        }
+
+        // Check if time is within (possibly expanded) event bounds
+        if (clickTime >= hitStartTime && clickTime <= hitEndTime) {
             return event;
         }
     }

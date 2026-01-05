@@ -20,7 +20,7 @@ const initialState: CalendarState = {
     available: [],
     selected: new Set(),
     visible: new Set(),
-    showHistorical: false,
+    showHistorical: true,
 };
 
 function createCalendarStore() {
